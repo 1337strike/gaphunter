@@ -1,0 +1,171 @@
+[
+  {
+    "Event": {
+      "#attributes": {"xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"},
+      "System": {
+        "Provider": {"#attributes": {"Name": "Microsoft-Windows-Sysmon", "Guid": "5770385F-C22A-43E0-BF4C-06F5698FFBD9"}},
+        "EventID": 1,
+        "Version": 5,
+        "Level": 4,
+        "TimeCreated": {"#attributes": {"SystemTime": "2026-11-14T02:00:01.1234567Z"}},
+        "EventRecordID": 1001,
+        "Execution": {"#attributes": {"ProcessID": 2100, "ThreadID": 3000}},
+        "Channel": "Microsoft-Windows-Sysmon/Operational",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": {
+        "RuleName": "technique_id=T1033,technique_name=System Owner/User Discovery",
+        "UtcTime": "2026-11-14 02:00:01.120",
+        "ProcessGuid": "{11111111-0000-0000-0000-000000000001}",
+        "ProcessId": 4321,
+        "Image": "C:\\Windows\\System32\\whoami.exe",
+        "CommandLine": "whoami /all",
+        "User": "GH-WIN10\\labadmin",
+        "IntegrityLevel": "High",
+        "Hashes": "SHA256=AAAA",
+        "ParentProcessGuid": "{11111111-0000-0000-0000-000000000000}",
+        "ParentProcessId": 4000,
+        "ParentImage": "C:\\Windows\\System32\\cmd.exe",
+        "ParentCommandLine": "cmd.exe /c whoami /all"
+      }
+    }
+  },
+  {
+    "Event": {
+      "System": {
+        "Provider": {"#attributes": {"Name": "Microsoft-Windows-Sysmon"}},
+        "EventID": 3,
+        "TimeCreated": {"#attributes": {"SystemTime": "2026-11-14T02:00:02.500000Z"}},
+        "EventRecordID": 1002,
+        "Execution": {"#attributes": {"ProcessID": 2100, "ThreadID": 3000}},
+        "Channel": "Microsoft-Windows-Sysmon/Operational",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": {
+        "RuleName": "-",
+        "ProcessGuid": "{11111111-0000-0000-0000-000000000002}",
+        "ProcessId": 5000,
+        "Image": "C:\\Windows\\System32\\svchost.exe",
+        "User": "NT AUTHORITY\\SYSTEM",
+        "Protocol": "tcp",
+        "DestinationIp": "10.66.66.1",
+        "DestinationPort": 53
+      }
+    }
+  },
+  {
+    "Event": {
+      "System": {
+        "Provider": {"#attributes": {"Name": "Microsoft-Windows-Sysmon"}},
+        "EventID": 10,
+        "TimeCreated": {"#attributes": {"SystemTime": "2026-11-14T02:00:03Z"}},
+        "EventRecordID": 1003,
+        "Channel": "Microsoft-Windows-Sysmon/Operational",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": {
+        "RuleName": "-",
+        "SourceProcessGUID": "{11111111-0000-0000-0000-000000000003}",
+        "SourceProcessId": 6000,
+        "SourceImage": "C:\\Windows\\System32\\taskmgr.exe",
+        "TargetProcessId": 700,
+        "TargetImage": "C:\\Windows\\System32\\notepad.exe",
+        "GrantedAccess": "0x1410"
+      }
+    }
+  },
+  {
+    "Event": {
+      "System": {
+        "Provider": {"#attributes": {"Name": "Microsoft-Windows-Sysmon"}},
+        "EventID": 13,
+        "TimeCreated": {"#attributes": {"SystemTime": "2026-11-14T02:00:04.000001Z"}},
+        "EventRecordID": 1004,
+        "Channel": "Microsoft-Windows-Sysmon/Operational",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": {
+        "RuleName": "-",
+        "EventType": "SetValue",
+        "ProcessGuid": "{11111111-0000-0000-0000-000000000004}",
+        "ProcessId": 6100,
+        "Image": "C:\\Windows\\regedit.exe",
+        "TargetObject": "HKU\\S-1-5-21-1\\Software\\Example\\Setting",
+        "Details": "DWORD (0x00000001)"
+      }
+    }
+  },
+  {
+    "Event": {
+      "System": {
+        "Provider": {"#attributes": {"Name": "Microsoft-Windows-Security-Auditing", "Guid": "54849625-5478-4994-A5BA-3E3B0328C30D"}},
+        "EventID": 4688,
+        "TimeCreated": {"#attributes": {"SystemTime": "2026-11-14T02:00:01.130000Z"}},
+        "EventRecordID": 501,
+        "Execution": {"#attributes": {"ProcessID": 4, "ThreadID": 88}},
+        "Channel": "Security",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": {
+        "SubjectUserSid": "S-1-5-21-1-1001",
+        "SubjectUserName": "labadmin",
+        "SubjectDomainName": "GH-WIN10",
+        "NewProcessId": "0x10e1",
+        "NewProcessName": "C:\\Windows\\System32\\whoami.exe",
+        "TokenElevationType": "%%1937",
+        "ProcessId": "0xfa0",
+        "CommandLine": "whoami /all",
+        "ParentProcessName": "C:\\Windows\\System32\\cmd.exe",
+        "MandatoryLabel": "S-1-16-12288"
+      }
+    }
+  },
+  {
+    "Event": {
+      "System": {
+        "Provider": {"#attributes": {"Name": "Microsoft-Windows-PowerShell"}},
+        "EventID": 4104,
+        "TimeCreated": {"#attributes": {"SystemTime": "2026-11-14T02:00:05.250000Z"}},
+        "EventRecordID": 77,
+        "Execution": {"#attributes": {"ProcessID": 7000, "ThreadID": 7100}},
+        "Channel": "Microsoft-Windows-PowerShell/Operational",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": {
+        "MessageNumber": 1,
+        "MessageTotal": 1,
+        "ScriptBlockText": "Get-ChildItem C:\\Users",
+        "ScriptBlockId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "Path": ""
+      }
+    }
+  },
+  {
+    "Event": {
+      "System": {
+        "Provider": {"#attributes": {"Name": "Microsoft-Windows-PowerShell"}},
+        "EventID": {"#attributes": {"Qualifiers": 0}, "#text": 4103},
+        "TimeCreated": {"#attributes": {"SystemTime": "2026-11-14T02:00:05.300000Z"}},
+        "EventRecordID": 78,
+        "Execution": {"#attributes": {"ProcessID": 7000, "ThreadID": 7100}},
+        "Channel": "Microsoft-Windows-PowerShell/Operational",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": {
+        "ContextInfo": "        Severity = Informational\r\n        Host Name = ConsoleHost\r\n        Host Application = powershell.exe -NoProfile -Command Get-Date\r\n        Engine Version = 5.1.19041.1",
+        "Payload": "CommandInvocation(Get-Date): \"Get-Date\""
+      }
+    }
+  },
+  {
+    "Event": {
+      "System": {
+        "Provider": {"#attributes": {"Name": "Broken"}},
+        "EventID": 1,
+        "Channel": "Security",
+        "Computer": "GH-WIN10"
+      },
+      "EventData": null
+    }
+  }
+]

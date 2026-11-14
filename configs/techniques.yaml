@@ -1,0 +1,24 @@
+# ATT&CK metadata for the techniques in your study: used only for reporting
+# (tactic coverage, table labels, Navigator layers). Add one entry per technique id that
+# appears in your sessions. Sub-techniques fall back to their parent's entry.
+#
+# Tactic names: execution, persistence, privilege-escalation, defense-evasion,
+# credential-access, discovery, lateral-movement, collection, command-and-control,
+# exfiltration, impact (and the others from the enterprise matrix).
+#
+# Example entries:
+T1082:
+  name: System Information Discovery
+  tactics: [discovery]
+T1057:
+  name: Process Discovery
+  tactics: [discovery]
+T1033:
+  name: System Owner/User Discovery
+  tactics: [discovery]
+T1016:
+  name: System Network Configuration Discovery
+  tactics: [discovery]
+T1083:
+  name: File and Directory Discovery
+  tactics: [discovery]
