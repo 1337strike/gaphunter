@@ -179,8 +179,9 @@ scp -i $KEY lab/guest-setup.ps1 labadmin@VM_IP:C:/Users/labadmin/guest-setup.ps1
 ssh -i $KEY labadmin@VM_IP "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\labadmin\guest-setup.ps1"
 ```
 
-It ends with `guest-setup: OK` and prints the Sysmon version and config hash, which
-GapHunter also records in every run manifest. It is safe to run again.
+It ends with `guest-setup: OK` and prints the Sysmon version, the sysmon-modular release
+and the config hash, which GapHunter also records in every run manifest. The config
+release is pinned for reproducibility; report it in the paper. It is safe to run again.
 
 Windows 11 also ships a built-in Sysmon feature (off by default). GapHunter uses the
 standalone release so the telemetry is the same on every Windows build; the two cannot run

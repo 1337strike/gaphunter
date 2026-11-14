@@ -16,12 +16,21 @@
   and it is what published Sigma rules are written against. The two cannot run together,
   so the script stops if the built-in feature is enabled.
 #>
+param(
+    # sysmon-modular publishes its ready-made configs as release assets. Pinned for
+    # reproducibility; pass -ConfigRelease latest to take the newest one.
+    [string]$ConfigRelease = 'configs-a45dedb13a43'
+)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $Tools = 'C:\Tools\Sysmon'
 $SysmonZip = 'https://download.sysinternals.com/files/Sysmon.zip'
-$ConfigUrl = 'https://raw.githubusercontent.com/olafhartong/sysmon-modular/master/sysmonconfig.xml'
+if ($ConfigRelease -eq 'latest') {
+    $ConfigUrl = 'https://github.com/olafhartong/sysmon-modular/releases/latest/download/sysmonconfig.xml'
+} else {
+    $ConfigUrl = "https://github.com/olafhartong/sysmon-modular/releases/download/$ConfigRelease/sysmonconfig.xml"
+}
 
 function Step($text) { Write-Output "==> $text" }
 
@@ -81,6 +90,7 @@ $recent = (Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEven
 $pcAudit = (& auditpol.exe /get /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}") -join ' '
 Write-Output ("Sysmon service : {0} ({1})" -f $svc.State, $svc.StartMode)
 Write-Output ("Sysmon version : {0}" -f $version)
+Write-Output ("Config release : sysmon-modular {0}" -f $ConfigRelease)
 Write-Output ("Config hash    : {0}" -f $hash)
 Write-Output ("Sysmon events  : {0} recent events readable" -f $recent)
 Write-Output ("Process audit  : {0}" -f $(if ($pcAudit -match 'Success') { 'on' } else { 'CHECK MANUALLY' }))
