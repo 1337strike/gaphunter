@@ -220,6 +220,20 @@ class DetectConfig(_Model):
     max_command_chars: int = Field(default=400, ge=40)
 
 
+class GuideConfig(_Model):
+    """`gaphunter guide`: what to tell the analyst to run in the VM for each repetition.
+
+    GapHunter never runs the test itself; it prints this line for the analyst to paste
+    into the SSH session. {technique} and {test} are substituted.
+    """
+
+    test_command: str = (
+        "Import-Module C:\\AtomicRedTeam\\invoke-atomicredteam\\Invoke-AtomicRedTeam.psd1 "
+        "-Force; Invoke-AtomicTest {technique} -TestNumbers {test}; "
+        "Invoke-AtomicTest {technique} -TestNumbers {test} -Cleanup; exit"
+    )
+
+
 class EvalConfig(_Model):
     # A technique counts as detected when at least this share of its runs is detected.
     technique_min_rate: float = Field(default=0.5, gt=0, le=1)
@@ -239,6 +253,7 @@ class Config(_Model):
     ml: MlConfig = Field(default_factory=MlConfig)
     evaluation: EvalConfig = Field(default_factory=EvalConfig)
     detect: DetectConfig = Field(default_factory=DetectConfig)
+    guide: GuideConfig = Field(default_factory=GuideConfig)
 
 
 class SshCredentials(_Model):

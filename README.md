@@ -354,6 +354,21 @@ otherwise:
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
+### Guided runs
+
+For the experiment itself, `guide` walks through all repetitions of one test:
+
+```bash
+uv run gaphunter guide "$RUN" --technique T1082 --test 1 --reps 3
+```
+
+For each repetition it reverts the VM and opens the window, shows the SSH command and the
+one line to paste into the VM, waits for you to press Enter, then closes the window,
+collects the logs, detects the root process and labels the events. Type `r` to redo a
+repetition or `q` to stop; running the same command again continues where it stopped.
+GapHunter never runs the test itself; the line it shows is `guide.test_command` in the
+config.
+
 ### Resuming after a crash
 
 State is written after every step (`state.json`), so nothing is redone needlessly:

@@ -23,6 +23,9 @@ Added
 - `lab/guest-setup.ps1`: one script for the guest's telemetry (Sysmon with sysmon-modular,
   process-creation auditing with command lines, PowerShell script block logging, log sizes),
   run from the host over SSH.
+- `gaphunter guide`: walks through every repetition of one test (revert, open the window,
+  show the line to paste into the VM, wait for Enter, collect, detect the root, label),
+  with redo, stop and resume.
 - `session end` without `--root-pid` detects the root process: the interactive shell that
   SSH started inside the window and that started other processes (GapHunter's own
   non-interactive commands are excluded). Checked against the pilot's real process tree.

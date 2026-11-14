@@ -72,3 +72,8 @@ evaluation:
 detect:
   top_features: 6
   top_commands: 5
+
+guide:
+  # Line shown by `gaphunter guide` for you to paste into the VM's SSH session.
+  # GapHunter never runs it itself. {technique} and {test} are filled in.
+  test_command: "Import-Module C:\\AtomicRedTeam\\invoke-atomicredteam\\Invoke-AtomicRedTeam.psd1 -Force; Invoke-AtomicTest {technique} -TestNumbers {test}; Invoke-AtomicTest {technique} -TestNumbers {test} -Cleanup; exit"

@@ -372,3 +372,88 @@ def test_cli_session_end_detects_the_root_pid(
     assert RunDir.open(run_dir).get("T1033-1-r1").executor_root_pid == 701  # type: ignore[union-attr]
     label = runner.invoke(cli.app, ["-c", str(cfg_file), "label", str(run_dir)])
     assert "0 malicious" not in label.output, label.output
+
+
+def test_cli_guide_walks_through_repetitions(
+    cfg_file: Path, records: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from conftest import FakeHypervisor
+
+    from gaphunter.collector import export as export_mod
+    from gaphunter.collector.parse import normalize_records
+
+    key = tmp_path / "key"
+    key.write_text("k")
+    monkeypatch.setenv("GAPHUNTER_SSH_USER", "labadmin")
+    monkeypatch.setenv("GAPHUNTER_SSH_KEY", str(key))
+    guest = Guest()
+    hv = FakeHypervisor()
+    monkeypatch.setattr(cli, "_remote", lambda state: FakeRemote(guest.handler))
+    monkeypatch.setattr(cli, "_hypervisor", lambda state: hv)
+
+    def fake_parse(path: Path, *, execution_id: str) -> list[dict[str, Any]]:
+        if path.stem != "sysmon":
+            return []
+        base = normalize_records(records[:1], execution_id=execution_id)[0]
+        now = guest.now  # the window ends at the guest's current time
+        tree = [
+            (
+                700,
+                600,
+                "C:\\Windows\\System32\\OpenSSH\\sshd.exe",
+                "C:\\Windows\\System32\\cmd.exe",
+                'cmd.exe /c "powershell"',
+            ),
+            (
+                701,
+                700,
+                "C:\\Windows\\System32\\cmd.exe",
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "powershell",
+            ),
+            (
+                702,
+                701,
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "C:\\Windows\\System32\\whoami.exe",
+                "whoami /all",
+            ),
+        ]
+        return [
+            {**base, "record_id": 100 + i, "ts_utc": now - timedelta(seconds=20 - i),
+             "pid": pid, "parent_pid": ppid, "parent_image": parent, "image": image,
+             "command_line": cmd, "process_guid": f"{{p-{pid}}}", "parent_process_guid": f"{{p-{ppid}}}"}
+            for i, (pid, ppid, parent, image, cmd) in enumerate(tree)
+        ]  # fmt: skip
+
+    monkeypatch.setattr(export_mod, "parse_evtx", fake_parse)
+    run_dir = _init(cfg_file)
+    guide = [
+        "-c", str(cfg_file), "--env-file", str(tmp_path / "none.env"),
+        "guide", str(run_dir), "--technique", "T1082", "--test", "1", "--reps", "3",
+    ]  # fmt: skip
+
+    # rep 1 done, rep 2 redone then done, stop at rep 3
+    first = runner.invoke(cli.app, guide, input="\nr\n\nq\n")
+    assert first.exit_code == 0, first.output
+    assert "Invoke-AtomicTest T1082 -TestNumbers 1" in first.output
+    assert f"ssh -i {key} labadmin@10.66.66.10 powershell" in first.output
+    assert "T1082-1-r2 discarded; starting it again" in first.output
+    assert "T1082-1-r1: " in first.output and "root PID 701" in first.output
+    run = RunDir.open(run_dir)
+    assert [s.execution_id for s in run.collected()] == ["T1082-1-r1", "T1082-1-r2"]
+    assert run.get("T1082-1-r3") is None and not run.pending()
+    assert hv.calls.count("revert:clean") == 4  # r1, r2 twice, r3
+
+    # re-running continues where it stopped
+    second = runner.invoke(cli.app, guide, input="\n")
+    assert second.exit_code == 0, second.output
+    assert "T1082-1-r1: already collected, skipping" in second.output
+    assert "all 3 repetitions collected" in second.output
+    labelled = RunDir.open(run_dir).get("T1082-1-r3")
+    assert labelled is not None and labelled.executor_root_pid == 701
+
+    # Ctrl+C / end of input discards the open window
+    third = runner.invoke(cli.app, [*guide[:-1], "4"], input="")
+    assert third.exit_code == 130
+    assert RunDir.open(run_dir).get("T1082-1-r4") is None

@@ -25,6 +25,8 @@ Analysis commands (all take the run directory)::
     gaphunter evaluate RUN                   metrics -> RUN/eval
     gaphunter report RUN [-o DIR]            Navigator layers, figures, LaTeX, CSV
     gaphunter demo                           synthetic run to try the pipeline without a lab
+    gaphunter guide RUN --technique T --test N --reps 3
+                                             walk through all repetitions of one test
 
 Using it on your own environment::
 
@@ -257,8 +259,6 @@ def session_begin(
     ] = False,
 ) -> None:
     """Open a collection window: optionally revert the VM, then record the start time."""
-    from gaphunter.lab import guest_info, guest_utc_now, revert_and_wait
-
     state = _state(ctx)
     try:
         if kind not in ("attack", "baseline"):
@@ -282,35 +282,63 @@ def session_begin(
             )
         if existing is not None:
             run.remove(execution_id)
-
-        remote = _remote(state)
-        if revert:
-            hv = _hypervisor(state)
-            try:
-                revert_and_wait(hv, remote, state.config.lab)
-            finally:
-                hv.close()
-        if not run.manifest().get("guest"):
-            run.update_guest_info(guest_info(remote))
-
-        start, control_pid = guest_utc_now(remote)
-        session = Session(
+        _open_session(
+            state,
+            run,
+            _remote(state),
             execution_id=execution_id,
             kind=session_kind,
-            technique_id=technique if session_kind == "attack" else None,
-            test_number=test if session_kind == "attack" else None,
+            technique=technique,
+            test=test,
             test_guid=test_guid,
-            repetition=rep,
-            start_utc=start,
-            snapshot=state.config.lab.snapshot,
-            reverted=revert,
-            control_pids=[control_pid] if control_pid is not None else [],
+            rep=rep,
+            revert=revert,
         )
-        run.upsert(session)
     except GapHunterError as exc:
         raise _fail(exc) from exc
-    logger.info("session.begin", execution_id=execution_id, start_utc=start.isoformat())
     typer.echo(execution_id)
+
+
+def _open_session(
+    state: AppState,
+    run: RunDir,
+    remote: Any,
+    *,
+    execution_id: str,
+    kind: SessionKind,
+    technique: str | None,
+    test: int | None,
+    test_guid: str | None,
+    rep: int | None,
+    revert: bool,
+) -> Session:
+    """Optionally revert the VM, then record the start of a collection window."""
+    from gaphunter.lab import guest_info, guest_utc_now, revert_and_wait
+
+    if revert:
+        hv = _hypervisor(state)
+        try:
+            revert_and_wait(hv, remote, state.config.lab)
+        finally:
+            hv.close()
+    if not run.manifest().get("guest"):
+        run.update_guest_info(guest_info(remote))
+    start, control_pid = guest_utc_now(remote)
+    session = Session(
+        execution_id=execution_id,
+        kind=kind,
+        technique_id=technique if kind == "attack" else None,
+        test_number=test if kind == "attack" else None,
+        test_guid=test_guid,
+        repetition=rep,
+        start_utc=start,
+        snapshot=state.config.lab.snapshot,
+        reverted=revert,
+        control_pids=[control_pid] if control_pid is not None else [],
+    )
+    run.upsert(session)
+    logger.info("session.begin", execution_id=execution_id, start_utc=start.isoformat())
+    return session
 
 
 def _collect(state: AppState, run: RunDir, session: Session, remote: Any) -> Session:
@@ -341,38 +369,53 @@ def session_end(
     ] = None,
 ) -> None:
     """Close the open window, then export, copy and parse its logs."""
-    from gaphunter.lab import guest_utc_now
-
     state = _state(ctx)
     try:
         run = RunDir.open(run_dir)
-        open_sessions = [s for s in run.sessions() if s.status == "open"]
-        if not open_sessions:
-            raise RunStateError("no open session; use 'session begin' first")
-        if len(open_sessions) > 1:
-            ids = ", ".join(s.execution_id for s in open_sessions)
-            raise RunStateError(f"more than one open session ({ids}); discard the stale ones")
-        remote = _remote(state)
-        end, control_pid = guest_utc_now(remote)
-        current = open_sessions[0]
-        pids = [*current.control_pids, *([control_pid] if control_pid is not None else [])]
-        ended = current.model_copy(
-            update={
-                "end_utc": end,
-                "status": "ended",
-                "exit_code": exit_code,
-                "executor_root_pid": root_pid,
-                "notes": notes,
-                "control_pids": pids,
-            }
+        done = _close_session(
+            state, run, _remote(state), exit_code=exit_code, root_pid=root_pid, notes=notes
         )
-        run.upsert(ended)  # persisted before collecting, so a failed export can be retried
-        done = _collect(state, run, ended, remote)
-        if done.kind == "attack" and done.executor_root_pid is None:
-            done = _auto_root(run, done)
     except GapHunterError as exc:
         raise _fail(exc) from exc
     typer.echo(f"{done.execution_id}: {done.n_events} events")
+
+
+def _close_session(
+    state: AppState,
+    run: RunDir,
+    remote: Any,
+    *,
+    exit_code: int | None = None,
+    root_pid: int | None = None,
+    notes: str | None = None,
+) -> Session:
+    """Close the single open window, collect its logs and fill in the root PID."""
+    from gaphunter.lab import guest_utc_now
+
+    open_sessions = [s for s in run.sessions() if s.status == "open"]
+    if not open_sessions:
+        raise RunStateError("no open session; use 'session begin' first")
+    if len(open_sessions) > 1:
+        ids = ", ".join(s.execution_id for s in open_sessions)
+        raise RunStateError(f"more than one open session ({ids}); discard the stale ones")
+    end, control_pid = guest_utc_now(remote)
+    current = open_sessions[0]
+    pids = [*current.control_pids, *([control_pid] if control_pid is not None else [])]
+    ended = current.model_copy(
+        update={
+            "end_utc": end,
+            "status": "ended",
+            "exit_code": exit_code,
+            "executor_root_pid": root_pid,
+            "notes": notes,
+            "control_pids": pids,
+        }
+    )
+    run.upsert(ended)  # persisted before collecting, so a failed export can be retried
+    done = _collect(state, run, ended, remote)
+    if done.kind == "attack" and done.executor_root_pid is None:
+        done = _auto_root(run, done)
+    return done
 
 
 def _auto_root(run: RunDir, session: Session) -> Session:
@@ -477,6 +520,122 @@ def session_set_root(run_dir: Path, execution_id: str, root_pid: int) -> None:
     except GapHunterError as exc:
         raise _fail(exc) from exc
     typer.echo(f"{execution_id}: root PID set to {root_pid}; run 'gaphunter label' to relabel")
+
+
+# -- guided runs ---------------------------------------------------------------------
+
+
+def _ssh_hint(state: AppState) -> str:
+    creds = load_credentials(state.config.ssh, env_file=state.env_file)
+    port = "" if state.config.ssh.port == 22 else f" -p {state.config.ssh.port}"
+    return f"ssh -i {creds.key_path}{port} {creds.user}@{state.config.ssh.host} powershell"
+
+
+@app.command("guide")
+def guide_cmd(
+    ctx: typer.Context,
+    run_dir: Path,
+    technique: Annotated[str, typer.Option(help="ATT&CK technique id, e.g. T1082.")],
+    test: Annotated[int, typer.Option(help="Atomic test number.")] = 1,
+    reps: Annotated[int, typer.Option(min=1, help="Number of repetitions.")] = 3,
+    revert: Annotated[
+        bool, typer.Option("--revert/--no-revert", help="Revert to the clean snapshot each time.")
+    ] = True,
+) -> None:
+    """Walk through every repetition of one test: begin, you run it, end, label.
+
+    Repetitions that are already collected are skipped, so the command can be re-run
+    after a stop. GapHunter does not run the test: it shows the line to paste into the VM.
+    """
+    from gaphunter.labeler import label_run
+
+    state = _state(ctx)
+    command = state.config.guide.test_command.format(technique=technique, test=test)
+    try:
+        run = RunDir.open(run_dir)
+        remote = _remote(state)
+        ssh = _ssh_hint(state)
+        rep = 1
+        while rep <= reps:
+            execution_id = make_execution_id(
+                "attack", technique_id=technique, test_number=test, repetition=rep
+            )
+            existing = run.get(execution_id)
+            if existing is not None and existing.status == "collected":
+                typer.echo(f"{execution_id}: already collected, skipping")
+                rep += 1
+                continue
+            others = [s.execution_id for s in run.pending() if s.execution_id != execution_id]
+            if others:
+                raise RunStateError(
+                    f"uncollected session(s): {', '.join(others)}. Finish or discard them first."
+                )
+            if existing is not None and existing.status == "ended":
+                done = _collect(state, run, existing, remote)  # an earlier export failed
+                if done.executor_root_pid is None:
+                    _auto_root(run, done)
+                rep += 1
+                continue
+            if existing is not None:
+                run.remove(execution_id)  # a window left open by an interrupted guide
+
+            typer.echo(f"\n=== {technique} test {test}, repetition {rep} of {reps} ===")
+            typer.echo("preparing the VM..." if revert else "opening the window...")
+            _open_session(
+                state,
+                run,
+                remote,
+                execution_id=execution_id,
+                kind="attack",
+                technique=technique,
+                test=test,
+                test_guid=None,
+                rep=rep,
+                revert=revert,
+            )
+            typer.echo("\nReady. In a second terminal, connect:")
+            typer.echo(f"    {ssh}")
+            typer.echo("then paste this one line:")
+            typer.echo(f"    {command}")
+            typer.echo("\nWhen the SSH session has closed, press Enter here.")
+            try:
+                answer = typer.prompt(
+                    "[Enter] done   r = redo   q = stop",
+                    default="",
+                    show_default=False,
+                    prompt_suffix="> ",
+                )
+            except (typer.Abort, KeyboardInterrupt, EOFError):
+                run.remove(execution_id)
+                typer.echo(f"\nstopped; {execution_id} discarded")
+                raise typer.Exit(code=130) from None
+            answer = answer.strip().lower()
+            if answer == "q":
+                run.remove(execution_id)
+                typer.echo(f"stopped; {execution_id} discarded. Re-run the same command to go on.")
+                return
+            if answer == "r":
+                run.remove(execution_id)
+                typer.echo(f"{execution_id} discarded; starting it again")
+                continue
+            done = _close_session(state, run, remote)
+            stats = [
+                s for s in label_run(run, state.config.labeler) if s.execution_id == execution_id
+            ]
+            malicious = stats[0].n_malicious if stats else 0
+            typer.echo(
+                f"{execution_id}: {done.n_events} events, root PID {done.executor_root_pid}, "
+                f"{malicious} malicious"
+            )
+            if malicious == 0:
+                typer.echo(
+                    "  warning: nothing was labelled. Check 'gaphunter session processes "
+                    f"RUN {execution_id}', or press r next time to redo a repetition."
+                )
+            rep += 1
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    typer.echo(f"\n{technique} test {test}: all {reps} repetitions collected")
 
 
 # -- analysis pipeline ---------------------------------------------------------------
