@@ -20,6 +20,9 @@ Added
 - `gaphunter lab snapshot`: takes the clean snapshot, refuses a VM that is not isolated,
   and explains libvirt's UEFI/NVRAM refusal. `lab check` reports whether the snapshot is
   live or offline.
+- `lab/guest-setup.ps1`: one script for the guest's telemetry (Sysmon with sysmon-modular,
+  process-creation auditing with command lines, PowerShell script block logging, log sizes),
+  run from the host over SSH.
 - `--same-host` for `import-evtx` and `detect`, for a machine that logged under two names
   (Windows setup names it WIN-XXXX before it is renamed).
 

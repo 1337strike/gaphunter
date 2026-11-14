@@ -121,47 +121,70 @@ or rebuild the VM from a fresh ISO.
 
 In an elevated PowerShell inside the guest:
 
-**OpenSSH Server with key authentication**
+**Host firewall (ufw users).** ufw blocks the VM's address request (DHCP) and its traffic
+out of the default network; the VM then shows a `169.254.x.x` address. Allow both
+networks' address requests, and forwarding only for the temporary default network:
+
+```bash
+BR=$(virsh -c qemu:///system net-info default | awk '/Bridge/{print $2}')
+sudo ufw allow in on "$BR"
+sudo ufw route allow in on "$BR"
+sudo ufw route allow out on "$BR"
+sudo ufw allow in on virbr-gh to any port 67 proto udp
+sudo ufw reload
+```
+
+Restarting a libvirt network while a VM runs unplugs the VM; power it off and on with
+`virsh shutdown` / `virsh start` afterwards.
+
+**OpenSSH Server.** In the VM open an administrator PowerShell (right-click Start,
+"Terminal (Admin)", or `Start-Process powershell -Verb RunAs`). Don't click inside an old
+console window while a command runs: its title changes to "Select" and the command pauses
+until you press Esc.
 
 ```powershell
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 Set-Service sshd -StartupType Automatic
 Start-Service sshd
+Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -Profile Any
+powercfg /change standby-timeout-ac 0
+powercfg /change monitor-timeout-ac 0
+ipconfig
 ```
 
-Create a dedicated key on the host and authorise it for the lab administrator:
+**Key login.** On the host, create a dedicated key (no passphrase, so GapHunter can run
+unattended; it only opens this isolated lab VM) and authorise it for the lab
+administrator. The last two commands ask for the Windows password:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/gaphunter_lab_ed25519 -C gaphunter-lab
+ssh-keygen -t ed25519 -f ~/.ssh/gaphunter_lab_ed25519 -N "" -C gaphunter-lab
+scp ~/.ssh/gaphunter_lab_ed25519.pub labadmin@VM_IP:C:/ProgramData/ssh/administrators_authorized_keys
+ssh labadmin@VM_IP "icacls.exe C:\ProgramData\ssh\administrators_authorized_keys /inheritance:r /grant Administrators:F /grant SYSTEM:F"
+ssh -i ~/.ssh/gaphunter_lab_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes labadmin@VM_IP "echo key-login-works"
 ```
 
-```powershell
-# paste the contents of gaphunter_lab_ed25519.pub into this file
-notepad C:\ProgramData\ssh\administrators_authorized_keys
-icacls.exe C:\ProgramData\ssh\administrators_authorized_keys /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"
+A warning that the connection "is not using a post-quantum key exchange algorithm" comes
+from Windows' built-in SSH server and is harmless here.
+
+**Sysmon, audit policy and PowerShell logging**
+
+`lab/guest-setup.ps1` does all of it in one go: it installs standalone Sysinternals Sysmon
+with the sysmon-modular configuration, turns on process-creation auditing with command
+lines and PowerShell script block logging, and enlarges the event logs. Run it from the
+host while the VM still has internet (replace `VM_IP` with the address `ipconfig` shows):
+
+```bash
+KEY=~/.ssh/gaphunter_lab_ed25519
+scp -i $KEY lab/guest-setup.ps1 labadmin@VM_IP:C:/Users/labadmin/guest-setup.ps1
+ssh -i $KEY labadmin@VM_IP "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\labadmin\guest-setup.ps1"
 ```
 
-**Sysmon with the sysmon-modular configuration**
+It ends with `guest-setup: OK` and prints the Sysmon version and config hash, which
+GapHunter also records in every run manifest. It is safe to run again.
 
-Copy `Sysmon64.exe` (Sysinternals) and `sysmonconfig.xml` (olafhartong/sysmon-modular)
-into the guest, then:
-
-```powershell
-.\Sysmon64.exe -accepteula -i .\sysmonconfig.xml
-```
-
-GapHunter records the Sysmon version and config hash in every run manifest.
-
-**Audit policy and PowerShell logging**
-
-```powershell
-auditpol /set /subcategory:"Process Creation" /success:enable
-reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit" /v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" /v EnableScriptBlockLogging /t REG_DWORD /d 1 /f
-wevtutil sl Microsoft-Windows-Sysmon/Operational /ms:268435456
-wevtutil sl Microsoft-Windows-PowerShell/Operational /ms:134217728
-wevtutil sl Security /ms:268435456
-```
+Windows 11 also ships a built-in Sysmon feature (off by default). GapHunter uses the
+standalone release so the telemetry is the same on every Windows build; the two cannot run
+side by side, and the script stops if the built-in one is enabled.
 
 **Emulation framework**
 
