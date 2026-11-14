@@ -59,7 +59,7 @@ Python 3.11 or newer. `libvirt-python` builds against the system libvirt, which 
 is an optional extra (`lab`): parsing and analysis work without it.
 
 ```bash
-just setup          # uv venv + pip install -e ".[lab,dev]"
+just setup          # uv sync with the lab and dev extras
 just test           # unit tests, no VM needed
 ```
 
