@@ -79,3 +79,68 @@ def set_root(run: RunDir, execution_id: str, root_pid: int) -> Session:
     run.upsert(updated)
     run.labeled_path(execution_id).unlink(missing_ok=True)
     return updated
+
+
+# -- automatic detection -------------------------------------------------------------
+
+_SSHD = frozenset({"sshd.exe", "sshd-session.exe"})
+_SHELLS = frozenset({"powershell.exe", "pwsh.exe", "cmd.exe"})
+# GapHunter's own remote commands run as `powershell.exe ... -NonInteractive -Command -`.
+_HARNESS_MARK = "-noninteractive -command -"
+
+
+@dataclass(frozen=True)
+class RootGuess:
+    pid: int | None
+    reason: str
+    candidates: tuple[int, ...] = ()
+
+
+def detect_root(starts: list[ProcessStart]) -> RootGuess:
+    """Find the interactive shell the test was typed into.
+
+    The analyst connects with ``ssh ... powershell``, so the window contains
+    sshd -> [cmd.exe /c "powershell" ->] powershell.exe, and the test's processes are that
+    shell's descendants. A candidate is the innermost shell of such a chain that is not
+    GapHunter's own non-interactive command and that started at least one other process.
+    """
+    by_pid = {p.pid: p for p in starts if p.pid is not None}
+    children: dict[int, list[ProcessStart]] = {}
+    for p in starts:
+        if p.parent_pid is not None:
+            children.setdefault(p.parent_pid, []).append(p)
+
+    def from_ssh(p: ProcessStart) -> bool:
+        if p.parent_image in _SSHD:
+            return True
+        parent = by_pid.get(p.parent_pid) if p.parent_pid is not None else None
+        return (
+            parent is not None
+            and parent.image in _SHELLS
+            and parent.parent_image in _SSHD
+            and _HARNESS_MARK not in parent.command_line.lower()
+        )
+
+    shells = [
+        p
+        for p in starts
+        if p.pid is not None
+        and not p.control
+        and p.image in _SHELLS
+        and _HARNESS_MARK not in p.command_line.lower()
+        and from_ssh(p)
+    ]
+    # Keep only the innermost shell of each chain (powershell, not the cmd that wraps it).
+    innermost = [p for p in shells if not any(c in shells for c in children.get(p.pid or -1, []))]
+    active = [p for p in innermost if children.get(p.pid or -1)]
+    pids = tuple(p.pid for p in active if p.pid is not None)
+    if len(pids) == 1:
+        shell = active[0]
+        return RootGuess(pids[0], f"{shell.image} started over SSH at {shell.ts:%H:%M:%S}", pids)
+    if not pids:
+        return RootGuess(
+            None,
+            "no interactive SSH shell that started processes was found in the window "
+            "(was the SSH session opened before 'session begin'?)",
+        )
+    return RootGuess(None, f"{len(pids)} interactive SSH shells started processes", pids)

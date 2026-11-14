@@ -23,6 +23,9 @@ Added
 - `lab/guest-setup.ps1`: one script for the guest's telemetry (Sysmon with sysmon-modular,
   process-creation auditing with command lines, PowerShell script block logging, log sizes),
   run from the host over SSH.
+- `session end` without `--root-pid` detects the root process: the interactive shell that
+  SSH started inside the window and that started other processes (GapHunter's own
+  non-interactive commands are excluded). Checked against the pilot's real process tree.
 - `session processes` lists the processes a session started; `session set-root` corrects a
   missed or mistyped root PID so `label` can redo the labels.
 - `--same-host` for `import-evtx` and `detect`, for a machine that logged under two names

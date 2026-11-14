@@ -331,7 +331,10 @@ def session_end(
     ] = None,
     root_pid: Annotated[
         int | None,
-        typer.Option(help="PID of the root process of the activity (used for lineage labels)."),
+        typer.Option(
+            help="PID of the root process of the activity (used for lineage labels). "
+            "Omit it to detect the SSH shell the test was typed into."
+        ),
     ] = None,
     notes: Annotated[
         str | None, typer.Option(help="Free-text note stored with the session.")
@@ -365,9 +368,34 @@ def session_end(
         )
         run.upsert(ended)  # persisted before collecting, so a failed export can be retried
         done = _collect(state, run, ended, remote)
+        if done.kind == "attack" and done.executor_root_pid is None:
+            done = _auto_root(run, done)
     except GapHunterError as exc:
         raise _fail(exc) from exc
     typer.echo(f"{done.execution_id}: {done.n_events} events")
+
+
+def _auto_root(run: RunDir, session: Session) -> Session:
+    """Fill in the root PID from the collected process creations, if unambiguous."""
+    from gaphunter.roots import detect_root, process_starts, set_root
+
+    guess = detect_root(process_starts(run, session))
+    if guess.pid is None:
+        logger.warning(
+            "session.root_not_detected",
+            execution_id=session.execution_id,
+            reason=guess.reason,
+            candidates=list(guess.candidates),
+        )
+        typer.echo(
+            f"could not detect the root PID ({guess.reason}). Pick it from "
+            f"'gaphunter session processes RUN {session.execution_id}' and set it with "
+            "'gaphunter session set-root'."
+        )
+        return session
+    updated = set_root(run, session.execution_id, guess.pid)
+    typer.echo(f"root PID {guess.pid} detected: {guess.reason}")
+    return updated
 
 
 @session_app.command("collect")

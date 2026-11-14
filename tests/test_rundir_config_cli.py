@@ -331,3 +331,44 @@ def test_cli_find_and_fix_the_root_pid(
 
     missing = runner.invoke(cli.app, [*base, "set-root", str(run_dir), "nope", "1"])
     assert missing.exit_code == 1
+
+
+def test_cli_session_end_detects_the_root_pid(
+    cfg_file: Path, records: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gaphunter.collector import export as export_mod
+    from gaphunter.collector.parse import normalize_records
+
+    guest = Guest()
+    monkeypatch.setattr(cli, "_remote", lambda state: FakeRemote(guest.handler))
+
+    def fake_parse(path: Path, *, execution_id: str) -> list[dict[str, Any]]:
+        if path.stem != "sysmon":
+            return []
+        base = normalize_records(records[:1], execution_id=execution_id)[0]
+        rows = []
+        tree = [  # sshd -> cmd /c "powershell" -> powershell -> whoami
+            (700, 600, "C:\\Windows\\System32\\OpenSSH\\sshd.exe", "C:\\Windows\\System32\\cmd.exe", 'cmd.exe /c "powershell"'),
+            (701, 700, "C:\\Windows\\System32\\cmd.exe", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "powershell"),
+            (702, 701, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "C:\\Windows\\System32\\whoami.exe", "whoami /all"),
+        ]  # fmt: skip
+        for i, (pid, ppid, parent, image, cmd) in enumerate(tree):
+            rows.append(
+                {**base, "record_id": 100 + i, "ts_utc": T0 + timedelta(seconds=40 + i),
+                 "pid": pid, "parent_pid": ppid, "parent_image": parent, "image": image,
+                 "command_line": cmd, "process_guid": f"{{p-{pid}}}",
+                 "parent_process_guid": f"{{p-{ppid}}}"}
+            )  # fmt: skip
+        return rows
+
+    monkeypatch.setattr(export_mod, "parse_evtx", fake_parse)
+    run_dir = _init(cfg_file)
+    base = ["-c", str(cfg_file), "session"]
+    begin = [*base, "begin", str(run_dir), "--technique", "T1033", "--test", "1", "--rep", "1"]
+    assert runner.invoke(cli.app, begin).exit_code == 0
+    ended = runner.invoke(cli.app, [*base, "end", str(run_dir)])  # no --root-pid
+    assert ended.exit_code == 0, ended.output
+    assert "root PID 701 detected" in ended.output
+    assert RunDir.open(run_dir).get("T1033-1-r1").executor_root_pid == 701  # type: ignore[union-attr]
+    label = runner.invoke(cli.app, ["-c", str(cfg_file), "label", str(run_dir)])
+    assert "0 malicious" not in label.output, label.output

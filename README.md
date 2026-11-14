@@ -271,9 +271,9 @@ RUN=$(uv run gaphunter run init --name pilot)
 # open a window: revert to the clean snapshot, wait for the VM, record the start time
 uv run gaphunter session begin "$RUN" --technique T1082 --test 1 --rep 1 --revert
 
-#   ... run the test yourself inside the VM ...
+#   ... in another terminal: ssh into the VM, run the test, exit ...
 
-# close the window: record the end time, export + copy + parse the logs
+# close the window: record the end time, export + copy + parse the logs, find the root
 uv run gaphunter session end "$RUN" --exit-code 0
 
 uv run gaphunter run status "$RUN"
@@ -282,8 +282,11 @@ uv run gaphunter run status "$RUN"
 Start and end times are read from the **guest clock**, because event timestamps come from
 it and it jumps back on every snapshot revert.
 
-Pass the PID of the process the test was started from to `session end --root-pid`. In a
-PowerShell session that is `$PID`. Without it, labels fall back to "everything inside the
+Run the test from an SSH session opened **after** `session begin`
+(`ssh -i <key> labadmin@10.66.66.10 powershell`). `session end` then finds the root process
+by itself: the interactive shell that SSH started and that started other processes. It
+prints `root PID ... detected`. You can still pass `--root-pid` (in PowerShell, `$PID`)
+to set it explicitly. If neither works, labels fall back to "everything inside the
 window", which is much noisier.
 
 If the root PID was missed or mistyped, `label` reports "no telemetry from the root's
