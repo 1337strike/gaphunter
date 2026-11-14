@@ -519,6 +519,18 @@ See `docs/methodology.md` for a write-up you can adapt for the paper.
 
 ## Development
 
+Commits on `main` are signed with the maintainer's key, so they show as Verified on
+GitHub. Changes prepared elsewhere (for example by an assistant that cannot sign with
+that key) are pushed to a branch and landed with:
+
+```bash
+just accept <branch>
+```
+
+which re-signs each commit with your key, fast-forwards `main`, pushes it and deletes the
+branch. Your uncommitted local changes are stashed and restored around it.
+
+
 ```bash
 just test     # pytest
 just lint     # ruff

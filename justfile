@@ -65,3 +65,22 @@ export-model run:
 # Build the container image
 docker:
     docker build -t gaphunter .
+
+# Re-sign a branch pushed by Claude with your key and land it on main (keeps main Verified)
+accept branch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stashed=0
+    if ! git diff --quiet; then git stash push -q -m just-accept; stashed=1; fi
+    git fetch -q origin
+    git checkout -q main
+    git pull -q --ff-only
+    git checkout -q -B _accept "origin/{{branch}}"
+    git rebase -q --force-rebase main --exec 'git commit -q --amend --no-edit --no-verify -S'
+    git checkout -q main
+    git merge -q --ff-only _accept
+    git push -q origin main
+    git branch -q -D _accept
+    git push -q origin --delete "{{branch}}"
+    if [ "$stashed" = 1 ]; then git stash pop -q; fi
+    git log --oneline --show-signature -3 2>/dev/null | grep -v '^$' || git log --oneline -3
