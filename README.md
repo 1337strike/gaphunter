@@ -17,9 +17,10 @@ framework; GapHunter only needs to know *when* each test ran and from which proc
 | Labels | `label` | `labeled/*.parquet` |
 | Features | `features` | `windows.parquet` |
 | Rule detector | `rules` (Hayabusa + Sigma) | `alerts.parquet` |
-| ML detectors | `train` (Isolation Forest, autoencoder, optional One-Class SVM) | `scores.parquet` |
+| ML detectors | `train` (Isolation Forest, autoencoder, rarity, ensemble; optional One-Class SVM) | `scores.parquet` |
 | Evaluation | `evaluate` | `eval/*.csv`, `eval/metrics.json` |
-| Reporting | `report` | Navigator layers, PDF figures, LaTeX tables, CSV |
+| Reporting | `report` | Navigator layers, PDF figures, LaTeX tables, CSV, `report.html` |
+| Deployment | `import-evtx`, `export-model`, `detect`, `explain` | model bundle, explained alerts (JSON lines) |
 
 ## Try it without a lab
 
@@ -49,7 +50,7 @@ report formats before the lab is ready.
 Host (developed for Arch Linux, 16 GB RAM, no GPU):
 
 ```bash
-sudo pacman -S libvirt qemu-desktop virt-manager dnsmasq openssh just uv
+sudo pacman -S libvirt qemu-desktop virt-manager dnsmasq openssh just uv swtpm edk2-ovmf
 sudo systemctl enable --now libvirtd
 sudo usermod -aG libvirt "$USER"    # log out and back in
 ```
@@ -58,7 +59,7 @@ Python 3.11 or newer. `libvirt-python` builds against the system libvirt, which 
 is an optional extra (`lab`): parsing and analysis work without it.
 
 ```bash
-just setup          # uv venv + pip install -e ".[lab,dev]"
+just setup          # uv sync with the lab and dev extras
 just test           # unit tests, no VM needed
 ```
 
@@ -74,14 +75,31 @@ just net-up
 virsh -c qemu:///system net-list --all
 ```
 
-Edit the `<host mac=...>` line to your VM's MAC (`virsh domiflist gh-win10`) so it always
+Edit the `<host mac=...>` line to your VM's MAC (`virsh domiflist gh-win11`) so it always
 receives `10.66.66.10`.
 
-### 2. Windows 10 VM
+### 2. Windows 11 VM
 
-Create a Windows 10 evaluation VM named `gh-win10` (4 GB RAM, 2 vCPU, qcow2 disk). During
-the build you can attach it to libvirt's default NAT network to install software; move it
-to `gaphunter-isolated` before taking the snapshot.
+Download the free 90-day **Windows 11 Enterprise evaluation** ISO (x64) from the Microsoft
+Evaluation Center. Windows 11 needs UEFI firmware, a TPM and at least 64 GB of disk;
+`--os-variant win11` makes virt-install add the firmware and an emulated TPM (`swtpm`).
+
+```bash
+virsh -c qemu:///system net-start default
+virt-install -n gh-win11 --memory 6144 --vcpus 2 \
+  --disk size=70,format=qcow2,bus=sata \
+  --cdrom ~/Downloads/<the-iso-you-downloaded>.iso \
+  --os-variant win11 --network network=default \
+  --graphics spice --connect qemu:///system
+```
+
+In Windows setup choose "Sign-in options" then "Domain join instead" to create a local
+account (for example `labadmin`). The VM starts on libvirt's default NAT network so you
+can install software; it is moved to `gaphunter-isolated` before the snapshot. 6 GB makes
+the installation bearable; 4 GB (`virsh setmaxmem` / `setmem`) is enough afterwards.
+
+The evaluation runs for 90 days from installation. Finish collecting within that time,
+or rebuild the VM from a fresh ISO.
 
 In an elevated PowerShell inside the guest:
 
@@ -135,17 +153,49 @@ not install or drive it.
 
 ### 3. Clean snapshot
 
-Switch the VM's NIC to `gaphunter-isolated`, reboot, confirm SSH works from the host, let
-the guest idle for a few minutes, then snapshot it **while running** so reverts take
-seconds instead of a full boot:
+Switch the VM's NIC to the isolated network, reboot, confirm SSH works from the host and
+let the guest idle for a few minutes:
 
 ```bash
-virsh -c qemu:///system snapshot-create-as gh-win10 clean "GapHunter clean state"
-virsh -c qemu:///system snapshot-list gh-win10
+virt-xml gh-win11 --edit --network network=gaphunter-isolated -c qemu:///system
 ```
 
-If libvirt refuses an internal snapshot because of UEFI firmware, use a recent libvirt or
-build the VM with BIOS firmware.
+Then let GapHunter take the snapshot. It refuses if the VM is not isolated:
+
+```bash
+uv run gaphunter lab snapshot            # add --replace to recreate it later
+```
+
+#### UEFI and snapshots
+
+A snapshot of the **running** VM makes every revert take seconds. For a UEFI guest
+(every Windows 11 VM) libvirt only allows that when the firmware's NVRAM file is in
+qcow2 format, and says so if it is not. Two ways forward:
+
+1. **Offline snapshot (simplest).** Shut the VM down and snapshot it while off. GapHunter
+   notices and boots the VM after every revert, which costs a minute or two per test.
+
+   ```bash
+   virsh -c qemu:///system shutdown gh-win11
+   uv run gaphunter lab snapshot
+   ```
+
+2. **Live snapshot (faster).** Convert the NVRAM to qcow2 once, with the VM shut down.
+   This needs libvirt 11.0 or newer and has not been tested by the authors.
+
+   ```bash
+   sudo qemu-img convert -f raw -O qcow2 \
+     /var/lib/libvirt/qemu/nvram/gh-win11_VARS.fd \
+     /var/lib/libvirt/qemu/nvram/gh-win11_VARS.qcow2
+   virsh -c qemu:///system edit gh-win11
+   #   inside <os>, replace the <nvram ...> element with:
+   #   <nvram format='qcow2'>/var/lib/libvirt/qemu/nvram/gh-win11_VARS.qcow2</nvram>
+   virsh -c qemu:///system start gh-win11
+   uv run gaphunter lab snapshot
+   ```
+
+`gaphunter lab check` reports which kind you have (`snapshot-kind`). The emulated TPM's
+state is not part of a snapshot; that does not matter for these experiments.
 
 ### 4. Configure GapHunter
 
@@ -160,6 +210,7 @@ Expected output:
 ```
 [ok  ] snapshot    'clean' found
 [ok  ] isolation   no forwarding network
+[ok  ] snapshot-kind live (reverts take seconds)
 [ok  ] vm-running  running
 [ok  ] ssh         PowerShell over SSH works
 [ok  ] sysmon      Sysmon64 15.x running
@@ -246,6 +297,65 @@ State is written after every step (`state.json`), so nothing is redone needlessl
 uv run gaphunter parse some.evtx other.evtx --out events.parquet
 ```
 
+## Using it on your own environment
+
+The lab answers "which techniques do my rules miss, and does ML catch them?". The same
+models can then watch real logs. Train on what is normal for *your* machines:
+
+```bash
+RUN=$(uv run gaphunter run init --name fleet)
+
+# 1. Benign logs from a machine you trust to be clean (one host per import).
+#    Export them on that machine, for example:
+#    wevtutil epl Microsoft-Windows-Sysmon/Operational sysmon.evtx
+uv run gaphunter import-evtx "$RUN" pc01/sysmon.evtx pc01/security.evtx pc01/powershell.evtx --name pc01
+#    (add --same-host if the machine was renamed and its logs carry two host names)
+
+# 2. Features and a deployable model
+uv run gaphunter label "$RUN"
+uv run gaphunter features "$RUN"
+uv run gaphunter export-model "$RUN" -o models/workstation.joblib
+
+# 3. Score new logs (add --rules to run Hayabusa on the same files)
+uv run gaphunter detect new/sysmon.evtx new/security.evtx -m models/workstation.joblib -o alerts.jsonl
+```
+
+Each ML alert says why it fired:
+
+```
+[HIGH  ] 2026-11-14T02:13:30+00:00  PC01  score 14.2 > 3.86  (212 events)
+    - highest command-line entropy: 5.66 (benign ~4.2)
+    - processes started with High integrity: 10 (benign ~0)
+    - program names: 3  e.g. tool-x.exe
+    > C:\Users\u\AppData\Local\Temp\tool-x.exe --mode ...
+```
+
+Things to know before relying on it:
+
+- **Train per machine role.** A model of developer workstations will flag a domain
+  controller constantly. `detect` warns when more than a fifth of the windows alert,
+  which almost always means the baseline does not match the logs.
+- **False alerts scale with volume.** At the default 1% threshold, a day of 30 s windows
+  (2,880) yields about 29 false ML alerts per host. Lower `ml.target_fpr` and collect a
+  longer baseline before using it for alerting; with few validation windows the threshold
+  cannot be set finer than one over their number.
+- **Batch, not streaming.** `detect` reads whole `.evtx` exports into memory; schedule it
+  (cron, a pipeline step) on periodic exports. Very large files need a machine with
+  enough RAM.
+- **Your own Sigma rules:** add Hayabusa's rule options to `rules.args` in the config.
+- **Model bundles are pickles.** Only load bundles you created; see `SECURITY.md`.
+- Importing red-team exercise logs with `--kind attack --technique T... --root-pid N`
+  lets you measure coverage on your own hosts with the same evaluation as the lab.
+
+### Container
+
+```bash
+docker build -t gaphunter .
+docker run --rm -v "$PWD:/work" gaphunter detect /work/new/sysmon.evtx -m /work/models/workstation.joblib
+```
+
+The image covers analysis and detection; lab control needs libvirt on the KVM host.
+
 ## Run directory
 
 ```
@@ -300,11 +410,12 @@ See `docs/methodology.md` for a write-up you can adapt for the paper.
 - **Features:** per 30 s window; event-ID counts, process and parent names, command-line
   statistics (length, entropy, special characters, base64), hashed command-line tokens,
   integrity levels, registry path categories, file and network counts.
-- **ML:** trained on benign windows only; thresholds from held-out benign validation
-  windows at a target false-positive rate (default 1%).
+- **ML:** Isolation Forest, autoencoder and a rarity score, plus their ensemble; trained
+  on benign windows only; thresholds from held-out benign validation windows at a target
+  false-positive rate (default 1%).
 - **Leave-technique-out:** hyper-parameters used for a technique are chosen using only
   the other techniques.
-- **Hybrid:** rule OR ML.
+- **Hybrid:** rule OR ML (by default the ensemble; `ml.hybrid_ml` selects another).
 
 ## Assumptions and threats to validity
 
@@ -344,4 +455,4 @@ just types    # mypy --strict
 
 ## License
 
-MIT
+Apache-2.0. See `LICENSE` and `NOTICE`. Commercial use is permitted under its terms.

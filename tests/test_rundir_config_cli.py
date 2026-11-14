@@ -26,7 +26,7 @@ runner = CliRunner()
 
 def test_default_config_file_is_valid() -> None:
     cfg = load_config(Path(__file__).parents[1] / "configs" / "gaphunter.yaml")
-    assert cfg.lab.domain == "gh-win10"
+    assert cfg.lab.domain == "gh-win11"
     assert set(cfg.collector.channels) == {"sysmon", "security", "powershell"}
 
 
@@ -83,7 +83,7 @@ def test_run_create_writes_reproducibility_manifest(config: Config) -> None:
     assert manifest["seed"] == 1337
     assert manifest["vm"] == {
         "libvirt_uri": "qemu:///system",
-        "domain": "gh-win10",
+        "domain": "gh-win11",
         "snapshot": "clean",
     }
     assert {"gaphunter", "python", "pyarrow", "evtx"} <= set(manifest["tool_versions"])

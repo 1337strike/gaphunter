@@ -29,6 +29,9 @@ class Hypervisor(Protocol):
     def start(self) -> None: ...
     def domain_xml(self) -> str: ...
     def network_xml(self, name: str) -> str: ...
+    def snapshot_xml(self, name: str) -> str: ...
+    def create_snapshot(self, name: str, description: str) -> None: ...
+    def delete_snapshot(self, name: str) -> None: ...
     def close(self) -> None: ...
 
 
@@ -87,11 +90,84 @@ class LibvirtHypervisor:
         except self._libvirt.libvirtError as exc:
             raise LabError(f"cannot read libvirt network {name!r}: {exc}") from exc
 
+    def snapshot_xml(self, name: str) -> str:
+        try:
+            return str(self._dom.snapshotLookupByName(name).getXMLDesc())
+        except self._libvirt.libvirtError as exc:
+            raise LabError(f"cannot read snapshot {name!r}: {exc}") from exc
+
+    def create_snapshot(self, name: str, description: str) -> None:
+        root = ET.Element("domainsnapshot")
+        ET.SubElement(root, "name").text = name
+        ET.SubElement(root, "description").text = description
+        try:
+            self._dom.snapshotCreateXML(ET.tostring(root, encoding="unicode"), 0)
+        except self._libvirt.libvirtError as exc:
+            raise LabError(explain_snapshot_error(str(exc), self._lab.domain)) from exc
+
+    def delete_snapshot(self, name: str) -> None:
+        try:
+            self._dom.snapshotLookupByName(name).delete(0)
+        except self._libvirt.libvirtError as exc:
+            raise LabError(f"cannot delete snapshot {name!r}: {exc}") from exc
+
     def close(self) -> None:
         try:
             self._conn.close()
         except self._libvirt.libvirtError:  # pragma: no cover - best effort
             pass
+
+
+# -- snapshots -----------------------------------------------------------------------
+
+
+def explain_snapshot_error(message: str, domain: str) -> str:
+    """Turn libvirt's UEFI snapshot refusal into something actionable.
+
+    Windows 11 needs UEFI firmware. libvirt can only include a UEFI guest's NVRAM in an
+    internal snapshot when that NVRAM file is qcow2, and refuses a live snapshot otherwise.
+    """
+    lowered = message.lower()
+    if "pflash" in lowered or "nvram" in lowered:
+        return (
+            f"libvirt refused the snapshot: {message}\n"
+            "This VM uses UEFI firmware with a raw NVRAM file. Either:\n"
+            f"  1. shut the VM down (virsh shutdown {domain}) and run 'gaphunter lab snapshot' "
+            "again for an offline snapshot (GapHunter then boots the VM after every revert), or\n"
+            "  2. convert the NVRAM to qcow2 as described under 'UEFI and snapshots' in the "
+            "README, then snapshot the running VM (reverts take seconds)."
+        )
+    return f"snapshot failed: {message}"
+
+
+def snapshot_kind(hv: Hypervisor, name: str) -> str:
+    """``live`` if the snapshot holds the running guest's memory, else ``offline``."""
+    root = ET.fromstring(hv.snapshot_xml(name))
+    memory = root.find("memory")
+    state = (root.findtext("state") or "").strip()
+    has_memory = memory is not None and memory.get("snapshot", "no") not in ("no", "")
+    return "live" if has_memory and state in ("running", "paused") else "offline"
+
+
+def take_snapshot(hv: Hypervisor, lab: LabConfig, *, replace: bool = False) -> str:
+    """Create the clean snapshot, refusing if the VM is not isolated. Returns its kind."""
+    problems = isolation_problems(hv)
+    if problems:
+        raise LabError(
+            "refusing to snapshot a VM that is not isolated: "
+            + "; ".join(problems)
+            + ". Attach it to the isolated network first."
+        )
+    if lab.snapshot in hv.snapshot_names():
+        if not replace:
+            raise LabError(
+                f"snapshot {lab.snapshot!r} already exists; pass --replace to recreate it"
+            )
+        hv.delete_snapshot(lab.snapshot)
+    hv.create_snapshot(lab.snapshot, "GapHunter clean state")
+    kind = snapshot_kind(hv, lab.snapshot)
+    log.info("lab.snapshot", domain=lab.domain, snapshot=lab.snapshot, kind=kind)
+    return kind
 
 
 # -- isolation -----------------------------------------------------------------------
@@ -258,6 +334,19 @@ def check_lab(hv: Hypervisor, remote: Remote, config: Config) -> list[CheckResul
     results.append(
         CheckResult("isolation", not problems, "; ".join(problems) or "no forwarding network")
     )
+
+    if lab.snapshot in snapshots:
+        try:
+            kind = snapshot_kind(hv, lab.snapshot)
+        except (LabError, ET.ParseError) as exc:
+            results.append(CheckResult("snapshot-kind", False, str(exc), fatal=False))
+        else:
+            detail = (
+                "live (reverts take seconds)"
+                if kind == "live"
+                else "offline (the VM boots after every revert; slower but fine)"
+            )
+            results.append(CheckResult("snapshot-kind", True, detail, fatal=False))
 
     running = hv.is_running()
     results.append(

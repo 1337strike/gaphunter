@@ -4,9 +4,9 @@ results_dir: results
 
 lab:
   libvirt_uri: qemu:///system
-  domain: gh-win10          # libvirt domain name of the Windows 10 VM
+  domain: gh-win11          # libvirt domain name of the Windows 11 VM
   snapshot: clean           # snapshot reverted to before each session
-  ready_timeout_s: 300
+  ready_timeout_s: 600      # a cold boot of Windows 11 can take a few minutes
   ready_poll_s: 5
   settle_s: 15              # idle time after SSH first answers
 
@@ -53,14 +53,19 @@ rules:
   min_level: medium
 
 ml:
-  detectors: [iforest, autoencoder]     # add ocsvm if you want it
+  detectors: [iforest, autoencoder, rarity]   # add ocsvm if you want it
+  ensemble: true                              # also score the average as "ensemble"
   seeds: [1337, 1338, 1339]
   target_fpr: 0.01
   benign_split: [0.6, 0.2, 0.2]
   split_order: chronological
   ae_backend: auto                      # torch if installed, else numpy
-  hybrid_ml: autoencoder
+  hybrid_ml: ensemble                   # the ML side of the headline hybrid
 
 evaluation:
   technique_min_rate: 0.5
   techniques_file: configs/techniques.yaml
+
+detect:
+  top_features: 6
+  top_commands: 5

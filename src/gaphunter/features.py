@@ -56,6 +56,20 @@ _TOKEN = re.compile(r"[a-z0-9][a-z0-9_\-]{1,63}")
 _B64 = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 _SPECIAL = re.compile(r"[^A-Za-z0-9\s\\/:.\-_]")
 _HEXBLOB = re.compile(r"^[0-9a-f]{16,}$")
+_USER_WRITABLE = re.compile(r"\\(users|programdata|temp|tmp|appdata|public)\\", re.I)
+_SCRIPT_HOSTS = frozenset(
+    {
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "wscript.exe",
+        "cscript.exe",
+        "mshta.exe",
+        "rundll32.exe",
+        "regsvr32.exe",
+    }
+)
+_LONG_COMMAND = 300
 
 STAT_FEATURES: tuple[str, ...] = (
     "f_n_events",
@@ -96,6 +110,12 @@ STAT_FEATURES: tuple[str, ...] = (
     "f_dns_n",
     "f_procaccess_n",
     "f_remote_thread_n",
+    # process-tree shape and launch context (added in 0.2)
+    "f_proc_max_depth",
+    "f_proc_max_children",
+    "f_proc_user_writable",
+    "f_proc_script_host",
+    "f_cmd_long_count",
 )
 
 
@@ -168,6 +188,83 @@ def _strings(series: pd.Series) -> list[str]:
     return [v for v in series if isinstance(v, str) and v]
 
 
+def _process_keys(creates: pd.DataFrame) -> list[tuple[object, object]]:
+    """(process, parent) identity per process creation: GUIDs when present, else PIDs."""
+    keys: list[tuple[object, object]] = []
+    for guid, parent_guid, pid, parent_pid in zip(
+        creates["process_guid"],
+        creates["parent_process_guid"],
+        creates["pid"],
+        creates["parent_pid"],
+        strict=True,
+    ):
+        own = guid if isinstance(guid, str) else (None if pd.isna(pid) else int(pid))
+        parent = (
+            parent_guid
+            if isinstance(parent_guid, str)
+            else (None if pd.isna(parent_pid) else int(parent_pid))
+        )
+        keys.append((own, parent))
+    return keys
+
+
+def _tree_shape(creates: pd.DataFrame) -> tuple[float, float]:
+    """Longest parent-child chain and largest fan-out among the window's new processes."""
+    keys = _process_keys(creates)
+    if not keys:
+        return 0.0, 0.0
+    parent_of = {own: parent for own, parent in keys if own is not None}
+    fan_out = Counter(parent for _, parent in keys if parent is not None)
+    depth_cache: dict[object, int] = {}
+
+    def depth(node: object) -> int:
+        chain: list[object] = []
+        while node in parent_of and node not in depth_cache and node not in chain:
+            chain.append(node)
+            node = parent_of[node]
+        base = depth_cache.get(node, 0)
+        for offset, item in enumerate(reversed(chain), start=1):
+            depth_cache[item] = base + offset
+        return depth_cache.get(chain[0], base) if chain else base
+
+    deepest = max(depth(own) for own in parent_of) if parent_of else 1
+    return float(deepest), float(max(fan_out.values(), default=0))
+
+
+def bucket_members(events: pd.DataFrame, cfg: FeatureConfig) -> dict[str, Counter[str]]:
+    """Which raw tokens / image names / parent>child pairs fell into each hashed feature.
+
+    Hashed features are opaque on their own; explanations use this to show the analyst
+    the actual strings behind a bucket.
+    """
+    mask = frozenset(m.lower() for m in cfg.mask_tokens)
+    channel, event_id = events["channel"], events["event_id"]
+    creates = events[(channel == "sysmon") & (event_id == 1)]
+    if creates.empty:
+        creates = events[(channel == "security") & (event_id == 4688)]
+    members: dict[str, Counter[str]] = {}
+    images = [basename(v) for v in creates["image"]]
+    parents = [basename(v) for v in creates["parent_image"]]
+    for image in images:
+        if image:
+            members.setdefault(f"f_img_{bucket(image, cfg.name_buckets):02d}", Counter())[
+                image
+            ] += 1
+    for parent, image in zip(parents, images, strict=True):
+        pair = f"{parent}>{image}"
+        members.setdefault(f"f_pair_{bucket(pair, cfg.name_buckets):02d}", Counter())[pair] += 1
+    texts = (
+        *_strings(creates["command_line"]),
+        *_strings(events.loc[channel == "powershell", "script_block_text"]),
+    )
+    for text in texts:
+        for token in tokenize(text, mask):
+            members.setdefault(f"f_tok_{bucket(token, cfg.token_buckets):03d}", Counter())[
+                token
+            ] += 1
+    return members
+
+
 def window_features(events: pd.DataFrame, cfg: FeatureConfig) -> dict[str, float]:
     """Feature vector for the events of one window."""
     mask = frozenset(m.lower() for m in cfg.mask_tokens)
@@ -200,6 +297,11 @@ def window_features(events: pd.DataFrame, cfg: FeatureConfig) -> dict[str, float
     integrity = creates["integrity_level"]
     feats["f_proc_high_integrity"] = float((integrity == "High").sum())
     feats["f_proc_system_integrity"] = float((integrity == "System").sum())
+    feats["f_proc_max_depth"], feats["f_proc_max_children"] = _tree_shape(creates)
+    feats["f_proc_user_writable"] = float(
+        sum(bool(_USER_WRITABLE.search(v)) for v in _strings(creates["image"]))
+    )
+    feats["f_proc_script_host"] = float(sum(i in _SCRIPT_HOSTS for i in images))
     for image in images:
         if image:
             feats[f"f_img_{bucket(image, cfg.name_buckets):02d}"] += 1.0
@@ -218,6 +320,7 @@ def window_features(events: pd.DataFrame, cfg: FeatureConfig) -> dict[str, float
         feats["f_cmd_special_ratio_max"] = max(special_ratio(c) for c in commands)
         feats["f_cmd_digit_ratio_max"] = max(digit_ratio(c) for c in commands)
         feats["f_cmd_b64_count"] = float(sum(has_base64(c) for c in commands))
+        feats["f_cmd_long_count"] = float(sum(n > _LONG_COMMAND for n in lengths))
 
     blocks = _strings(events.loc[channel == "powershell", "script_block_text"])
     if blocks:

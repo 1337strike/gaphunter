@@ -17,7 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from gaphunter.errors import ConfigError
 
 DEFAULT_CONFIG_PATH = Path("configs/gaphunter.yaml")
-DetectorName = Literal["iforest", "autoencoder", "ocsvm"]
+DetectorName = Literal["iforest", "autoencoder", "ocsvm", "rarity"]
+HybridName = Literal["iforest", "autoencoder", "ocsvm", "rarity", "ensemble"]
 
 
 class _Model(BaseModel):
@@ -26,9 +27,9 @@ class _Model(BaseModel):
 
 class LabConfig(_Model):
     libvirt_uri: str = "qemu:///system"
-    domain: str = "gh-win10"
+    domain: str = "gh-win11"
     snapshot: str = "clean"
-    ready_timeout_s: int = Field(default=300, ge=10)
+    ready_timeout_s: int = Field(default=600, ge=10)
     ready_poll_s: float = Field(default=5.0, gt=0)
     # Seconds to let the guest settle after it first answers over SSH.
     settle_s: float = Field(default=15.0, ge=0)
@@ -139,7 +140,9 @@ class RuleConfig(_Model):
 
 
 class MlConfig(_Model):
-    detectors: list[DetectorName] = ["iforest", "autoencoder"]
+    detectors: list[DetectorName] = ["iforest", "autoencoder", "rarity"]
+    # Also score the average of the detectors' standardised scores as "ensemble".
+    ensemble: bool = True
     seeds: list[int] = Field(default_factory=lambda: [1337, 1338, 1339], min_length=1)
     target_fpr: float = Field(default=0.01, gt=0, lt=1)
     # Benign baseline split into train / validation (thresholds) / test (FPR), by session.
@@ -162,6 +165,10 @@ class MlConfig(_Model):
     ocsvm_grid: list[dict[str, Any]] = Field(
         default_factory=lambda: [{"nu": 0.01, "gamma": "scale"}, {"nu": 0.05, "gamma": "scale"}]
     )
+    # Rarity: sum of the top_k most surprising hashed tokens / images / parent-child pairs.
+    rarity_grid: list[dict[str, Any]] = Field(
+        default_factory=lambda: [{"top_k": 10}, {"top_k": 30}]
+    )
     ae_epochs: int = Field(default=200, ge=1)
     ae_batch_size: int = Field(default=64, ge=1)
     ae_lr: float = Field(default=1e-3, gt=0)
@@ -169,15 +176,35 @@ class MlConfig(_Model):
     ae_backend: Literal["auto", "torch", "numpy"] = "auto"
     ocsvm_max_train: int = Field(default=5000, ge=10)
     # The ML detector combined with the rules for the headline "hybrid" result.
-    hybrid_ml: DetectorName = "autoencoder"
+    hybrid_ml: HybridName = "ensemble"
+
+    @property
+    def has_ensemble(self) -> bool:
+        return self.ensemble and len(self.detectors) >= 2
 
     @model_validator(mode="after")
     def _check(self) -> MlConfig:
         if abs(sum(self.benign_split) - 1.0) > 1e-6 or min(self.benign_split) <= 0:
             raise ValueError("ml.benign_split must be three positive fractions summing to 1")
-        if self.hybrid_ml not in self.detectors:
-            raise ValueError("ml.hybrid_ml must be one of ml.detectors")
+        if not self.detectors:
+            raise ValueError("ml.detectors must not be empty")
+        if self.hybrid_ml == "ensemble":
+            if not self.has_ensemble:
+                raise ValueError(
+                    "ml.hybrid_ml is 'ensemble' but the ensemble is off or has fewer than "
+                    "two detectors; pick one of ml.detectors instead"
+                )
+        elif self.hybrid_ml not in self.detectors:
+            raise ValueError("ml.hybrid_ml must be 'ensemble' or one of ml.detectors")
         return self
+
+
+class DetectConfig(_Model):
+    """Live detection (``gaphunter detect``)."""
+
+    top_features: int = Field(default=6, ge=1)
+    top_commands: int = Field(default=5, ge=0)
+    max_command_chars: int = Field(default=400, ge=40)
 
 
 class EvalConfig(_Model):
@@ -198,6 +225,7 @@ class Config(_Model):
     rules: RuleConfig = Field(default_factory=RuleConfig)
     ml: MlConfig = Field(default_factory=MlConfig)
     evaluation: EvalConfig = Field(default_factory=EvalConfig)
+    detect: DetectConfig = Field(default_factory=DetectConfig)
 
 
 class SshCredentials(_Model):

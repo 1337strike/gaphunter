@@ -42,8 +42,13 @@ def ps_quote(value: str) -> str:
 
 
 def wrap_powershell(script: str) -> str:
-    """Wrap a script so any terminating error becomes exit code 1 with a clear message."""
-    return _PS_PREAMBLE + script.strip("\n") + _PS_POSTAMBLE
+    """Wrap a script so any terminating error becomes exit code 1 with a clear message.
+
+    Blank lines are removed from the body: PowerShell reading a script from stdin treats
+    an empty line as "end of this multi-line block", which would cut the try block short.
+    """
+    body = "\n".join(line for line in script.splitlines() if line.strip())
+    return _PS_PREAMBLE + body + _PS_POSTAMBLE
 
 
 @dataclass(frozen=True)

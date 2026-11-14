@@ -6,8 +6,7 @@ default:
 
 # Create the virtualenv and install GapHunter with lab + dev extras
 setup:
-    uv venv --python 3.12
-    uv pip install -e ".[lab,dev]"
+    uv sync --python 3.12 --extra lab --extra dev
 
 # Unit tests (no VM needed)
 test:
@@ -58,3 +57,11 @@ analyze run:
     uv run gaphunter train {{run}}
     uv run gaphunter evaluate {{run}}
     uv run gaphunter report {{run}}
+
+# Train a deployable model from a run (default: the ensemble)
+export-model run:
+    uv run gaphunter export-model {{run}}
+
+# Build the container image
+docker:
+    docker build -t gaphunter .

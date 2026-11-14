@@ -6,7 +6,7 @@ values with those of your run (`manifest.json`, `eval/metrics.json`).
 ## Experimental setup
 
 All experiments ran in an isolated KVM/libvirt lab on a single laptop ([CPU], 16 GB RAM,
-no GPU). The target was a Windows 10 [build] virtual machine (4 GB RAM, 2 vCPU) attached
+no GPU). The target was a Windows 11 Enterprise [version/build] virtual machine (UEFI with emulated TPM 2.0, [4-6] GB RAM, 2 vCPU) attached
 to a libvirt network without forwarding, so the guest could reach only the host. The
 guest ran Sysmon [version] with the sysmon-modular configuration (hash [hash]), process
 creation auditing with command lines, and PowerShell script block logging. Before every
@@ -35,7 +35,8 @@ are excluded from detection rates, since no log-based detector could observe the
 
 Logs are cut into non-overlapping [30] s windows. Each window is described by counts per
 event ID, process-creation statistics (distinct images, parents and parent-child pairs,
-integrity levels), command-line statistics (length, character entropy, share of special
+integrity levels, depth and fan-out of the process tree, programs started from
+user-writable folders, script hosts), command-line statistics (length, character entropy, share of special
 characters and digits, presence of base64-like strings), a hashed bag of command-line and
 script tokens ([256] buckets), hashed image and parent-child names, registry-path
 categories, and file and network counts. The Sysmon rule-name field, the emulation
@@ -47,9 +48,12 @@ leakage.
 *Rule-based.* Hayabusa [version] with its Sigma rule set is run on the exported logs. A
 window is flagged when it contains an alert of level [medium] or higher.
 
-*ML-based.* Isolation Forest and a small fully connected autoencoder
-(d-64-b-64-d, b in {8, 16}), optionally a One-Class SVM, are trained on benign windows
-only. Counts are log-transformed and standardised and token buckets are TF-IDF weighted,
+*ML-based.* Isolation Forest, a small fully connected autoencoder (d-64-b-64-d,
+b in {8, 16}) and a rarity score (the sum of the k most surprising hashed command-line
+words, program names and parent-child pairs, with surprise -log((df+1)/(n+2)) estimated
+on benign windows), optionally a One-Class SVM, are trained on benign windows only. An
+ensemble averages the detectors' scores after robust standardisation (median and
+inter-quartile range of benign training scores). Counts are log-transformed and standardised and token buckets are TF-IDF weighted,
 with all statistics fitted on benign training windows. The anomaly score is the negated
 isolation score or the reconstruction error.
 

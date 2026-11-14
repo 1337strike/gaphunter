@@ -3,6 +3,7 @@
 Lab and collection commands::
 
     gaphunter lab check                      pre-flight checks
+    gaphunter lab snapshot                   take the clean snapshot (isolated VMs only)
     gaphunter lab revert                     revert the VM to the clean snapshot
     gaphunter run init [--name N]            create a run directory (prints its path)
     gaphunter run status RUN                 list sessions and their state
@@ -22,6 +23,15 @@ Analysis commands (all take the run directory)::
     gaphunter evaluate RUN                   metrics -> RUN/eval
     gaphunter report RUN [-o DIR]            Navigator layers, figures, LaTeX, CSV
     gaphunter demo                           synthetic run to try the pipeline without a lab
+
+Using it on your own environment::
+
+    gaphunter import-evtx RUN FILES... --name HOST     your own benign logs as baseline
+    gaphunter export-model RUN [-o model.joblib]       deployable model bundle
+    gaphunter detect FILES... -m model.joblib          score new logs, explain the alerts
+    gaphunter explain RUN WINDOW_ID -m model.joblib    why one window scored as it did
+
+Exit code 2: ``detect --fail-on-alert`` found something.
 
 Exit codes: 0 ok, 1 error, 3 ``session begin`` skipped because that session is already
 collected (lets a loop over a plan be re-run safely after a crash).
@@ -138,6 +148,33 @@ def lab_check(ctx: typer.Context) -> None:
         failed = failed or (not result.ok and result.fatal)
     if failed:
         raise typer.Exit(code=1)
+
+
+@lab_app.command("snapshot")
+def lab_snapshot(
+    ctx: typer.Context,
+    replace: Annotated[
+        bool, typer.Option(help="Delete an existing snapshot of the same name first.")
+    ] = False,
+) -> None:
+    """Take the clean snapshot (refuses if the VM's network is not isolated)."""
+    from gaphunter.lab import take_snapshot
+
+    state = _state(ctx)
+    try:
+        hv = _hypervisor(state)
+        try:
+            kind = take_snapshot(hv, state.config.lab, replace=replace)
+        finally:
+            hv.close()
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    note = (
+        "reverts take seconds"
+        if kind == "live"
+        else "the VM was off, so GapHunter boots it after every revert"
+    )
+    typer.echo(f"snapshot {state.config.lab.snapshot!r} created ({kind}: {note})")
 
 
 @lab_app.command("revert")
@@ -537,6 +574,216 @@ def demo_cmd(
     except GapHunterError as exc:
         raise _fail(exc) from exc
     typer.echo(str(run.path))
+
+
+# -- deployment ----------------------------------------------------------------------
+
+
+@app.command("import-evtx")
+def import_evtx_cmd(
+    ctx: typer.Context,
+    run_dir: Path,
+    evtx: Annotated[list[Path], typer.Argument(help=".evtx files from ONE host.")],
+    kind: Annotated[str, typer.Option(help="'baseline' (benign logs) or 'attack'.")] = "baseline",
+    name: Annotated[
+        str | None, typer.Option(help="Name of a baseline import, e.g. the host.")
+    ] = None,
+    technique: Annotated[str | None, typer.Option(help="Technique id (attack).")] = None,
+    test: Annotated[int, typer.Option(help="Test number (attack).")] = 1,
+    rep: Annotated[int, typer.Option(help="Repetition (attack).")] = 1,
+    root_pid: Annotated[
+        int | None, typer.Option(help="Root PID for lineage labels (attack).")
+    ] = None,
+    start: Annotated[str | None, typer.Option(help="Window start, ISO-8601 UTC (attack).")] = None,
+    end: Annotated[str | None, typer.Option(help="Window end, ISO-8601 UTC (attack).")] = None,
+    same_host: Annotated[
+        bool, typer.Option(help="The files are one machine that logged under several names.")
+    ] = False,
+) -> None:
+    """Import your own .evtx exports as baseline (training data) or as an attack session."""
+    from gaphunter.deploy import read_evtx_files
+    from gaphunter.importer import import_attack, import_baseline
+    from gaphunter.timeutil import parse_utc
+
+    state = _state(ctx)
+    try:
+        run = RunDir.open(run_dir)
+        events = read_evtx_files(evtx, execution_id="import")
+        if kind == "baseline":
+            if not name:
+                raise RunStateError("baseline imports need --name")
+            created = import_baseline(
+                run,
+                events,
+                name=name,
+                slice_minutes=state.config.baseline.slice_minutes,
+                evtx_files=evtx,
+                same_host=same_host,
+            )
+            typer.echo(f"imported {len(events)} events as {len(created)} baseline session(s)")
+        elif kind == "attack":
+            if not technique:
+                raise RunStateError("attack imports need --technique")
+            try:
+                window = (parse_utc(start) if start else None, parse_utc(end) if end else None)
+            except ValueError as exc:
+                raise RunStateError(str(exc)) from exc
+            execution_id = import_attack(
+                run,
+                events,
+                technique=technique,
+                test=test,
+                rep=rep,
+                root_pid=root_pid,
+                start=window[0],
+                end=window[1],
+                evtx_files=evtx,
+                same_host=same_host,
+            )
+            typer.echo(f"imported {len(events)} events as {execution_id}")
+        else:
+            raise RunStateError("--kind must be 'baseline' or 'attack'")
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+
+
+@app.command("export-model")
+def export_model_cmd(
+    ctx: typer.Context,
+    run_dir: Path,
+    detector: Annotated[
+        str | None, typer.Option(help="One of ml.detectors, or 'ensemble'. Default: ml.hybrid_ml.")
+    ] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o", help="Bundle file.")] = None,
+) -> None:
+    """Train a deployable model on a run's baseline and save it as a bundle."""
+    from gaphunter.deploy import fit_bundle, save_bundle
+
+    state = _state(ctx)
+    try:
+        run = RunDir.open(run_dir)
+        chosen = detector or state.config.ml.hybrid_ml
+        bundle = fit_bundle(run, state.config, chosen)
+        path = save_bundle(bundle, output or (run.models_dir / f"{chosen}.joblib"))
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    if bundle.meta.get("synthetic"):
+        typer.echo("note: trained on SYNTHETIC demo data; do not use on real logs", err=True)
+    typer.echo(str(path))
+
+
+@app.command("detect")
+def detect_cmd(
+    ctx: typer.Context,
+    evtx: Annotated[list[Path], typer.Argument(help=".evtx files to analyse.")],
+    model: Annotated[Path, typer.Option("--model", "-m", help="Bundle from export-model.")],
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write alerts as JSON lines.")
+    ] = None,
+    rules: Annotated[
+        bool, typer.Option("--rules/--no-rules", help="Also run Hayabusa on the files.")
+    ] = False,
+    explain: Annotated[
+        bool, typer.Option("--explain/--no-explain", help="Attach reasons to ML alerts.")
+    ] = True,
+    fail_on_alert: Annotated[
+        bool, typer.Option(help="Exit with code 2 when anything is detected.")
+    ] = False,
+    same_host: Annotated[
+        bool, typer.Option(help="Treat all events as one machine (it was renamed).")
+    ] = False,
+) -> None:
+    """Score new logs with a saved model (and optionally Sigma rules) and print alerts."""
+    import json
+    import tempfile
+
+    from gaphunter.deploy import detect_events, load_bundle, read_evtx_files, render_alert
+    from gaphunter.detectors.rule import detect_rule_alerts
+
+    state = _state(ctx)
+    try:
+        bundle = load_bundle(model)
+        events = read_evtx_files(evtx)
+        alerts, summary = detect_events(
+            events, bundle, state.config.detect, explain=explain, same_host=same_host
+        )
+        if rules:
+            with tempfile.TemporaryDirectory(prefix="gaphunter-") as tmp:
+                rule_alerts = detect_rule_alerts(evtx, state.config.rules, Path(tmp))
+            summary["rule_alerts"] = len(rule_alerts)
+            alerts = sorted([*alerts, *rule_alerts], key=lambda a: a["window_start"])
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("w", encoding="utf-8") as handle:
+            for alert in alerts:
+                handle.write(json.dumps(alert, ensure_ascii=False) + "\n")
+    for alert in alerts:
+        typer.echo(render_alert(alert))
+    if summary["model_synthetic"]:
+        typer.echo("note: this model was trained on SYNTHETIC demo data", err=True)
+    typer.echo(
+        f"{summary['events']} events, {summary['windows']} windows, {summary['alerts']} ML alert(s)"
+        + (f", {summary['rule_alerts']} rule alert(s)" if "rule_alerts" in summary else "")
+        + f"; about {summary['expected_false_alerts']:g} false ML alert(s) expected at this volume",
+        err=True,
+    )
+    if summary["baseline_mismatch"]:
+        typer.echo(
+            f"warning: {summary['alert_rate']:.0%} of windows alerted. These logs do not "
+            "resemble the model's baseline (different host role, Sysmon config or OS build?). "
+            "Train a model on baseline logs from this kind of machine.",
+            err=True,
+        )
+    if fail_on_alert and alerts:
+        raise typer.Exit(code=2)
+
+
+@app.command("explain")
+def explain_cmd(
+    ctx: typer.Context,
+    run_dir: Path,
+    window_id: Annotated[str, typer.Argument(help="A window_id from windows.parquet.")],
+    model: Annotated[Path, typer.Option("--model", "-m", help="Bundle from export-model.")],
+) -> None:
+    """Explain why one window of a run scored the way it did."""
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from gaphunter.collector.store import read_events
+    from gaphunter.deploy import explain_window, load_bundle
+
+    state = _state(ctx)
+    try:
+        run = RunDir.open(run_dir)
+        bundle = load_bundle(model)
+        if not run.windows_path.is_file():
+            raise RunStateError("windows.parquet not found; run 'gaphunter features' first")
+        windows = pd.read_parquet(run.windows_path)
+        match = windows[windows["window_id"] == window_id]
+        if match.empty:
+            raise RunStateError(f"no window {window_id!r} in this run")
+        row = match.iloc[0]
+        events = read_events(run.labeled_path(str(row["execution_id"]))).to_pandas()
+        chunk = events[
+            (events["ts_utc"] >= row["window_start"]) & (events["ts_utc"] < row["window_end"])
+        ]
+        x = row[bundle.columns].to_numpy(dtype=np.float64)
+        score = float(bundle.score(x[None, :])[0])
+        result = {
+            "window_id": window_id,
+            "label": bool(row["label"]),
+            "score": round(score, 4),
+            "threshold": round(bundle.threshold, 4),
+            "flagged": score > bundle.threshold,
+            "explanation": explain_window(bundle, x, chunk, state.config.detect),
+        }
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 # -- offline parsing -----------------------------------------------------------------

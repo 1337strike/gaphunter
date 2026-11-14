@@ -8,6 +8,8 @@ from gaphunter.lab.vm import (
     guest_info,
     guest_utc_now,
     revert_and_wait,
+    snapshot_kind,
+    take_snapshot,
     wait_until_ready,
 )
 
@@ -19,5 +21,7 @@ __all__ = [
     "guest_info",
     "guest_utc_now",
     "revert_and_wait",
+    "snapshot_kind",
+    "take_snapshot",
     "wait_until_ready",
 ]
