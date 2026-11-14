@@ -6,8 +6,7 @@ default:
 
 # Create the virtualenv and install GapHunter with lab + dev extras
 setup:
-    uv venv --python 3.12
-    uv pip install -e ".[lab,dev]"
+    uv sync --python 3.12 --extra lab --extra dev
 
 # Unit tests (no VM needed)
 test:
