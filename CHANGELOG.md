@@ -23,6 +23,8 @@ Added
 - `lab/guest-setup.ps1`: one script for the guest's telemetry (Sysmon with sysmon-modular,
   process-creation auditing with command lines, PowerShell script block logging, log sizes),
   run from the host over SSH.
+- `session processes` lists the processes a session started; `session set-root` corrects a
+  missed or mistyped root PID so `label` can redo the labels.
 - `--same-host` for `import-evtx` and `detect`, for a machine that logged under two names
   (Windows setup names it WIN-XXXX before it is renamed).
 

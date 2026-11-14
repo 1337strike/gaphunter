@@ -288,3 +288,46 @@ def test_cli_errors_are_clean(cfg_file: Path, tmp_path: Path) -> None:
     assert missing.exit_code == 1
     state = json.loads((run_dir / "state.json").read_text())
     assert state == {"sessions": []}
+
+
+def test_cli_find_and_fix_the_root_pid(
+    cfg_file: Path, records: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gaphunter.collector import export as export_mod
+    from gaphunter.collector.parse import normalize_records
+
+    guest = Guest()
+    monkeypatch.setattr(cli, "_remote", lambda state: FakeRemote(guest.handler))
+
+    def fake_parse(path: Path, *, execution_id: str) -> list[dict[str, Any]]:
+        rows = [
+            r
+            for r in normalize_records(records, execution_id=execution_id)
+            if r["channel"] == path.stem
+        ]
+        for row in rows:  # move the fixture events inside the session window
+            row["ts_utc"] = T0 + timedelta(seconds=40)
+        return rows
+
+    monkeypatch.setattr(export_mod, "parse_evtx", fake_parse)
+    run_dir = _init(cfg_file)
+    base = ["-c", str(cfg_file), "session"]
+    begin = [*base, "begin", str(run_dir), "--technique", "T1033", "--test", "1", "--rep", "1"]
+    assert runner.invoke(cli.app, begin).exit_code == 0
+    # T0+30s .. T0+60s window; a wrong root PID was given
+    assert runner.invoke(cli.app, [*base, "end", str(run_dir), "--root-pid", "9999"]).exit_code == 0
+    label = runner.invoke(cli.app, ["-c", str(cfg_file), "label", str(run_dir)])
+    assert "0 malicious" in label.output and "set-root" in label.output
+
+    listed = runner.invoke(cli.app, [*base, "processes", str(run_dir), "T1033-1-r1"])
+    assert listed.exit_code == 0, listed.output
+    assert "whoami.exe" in listed.output and "4000" in listed.output  # parent of whoami
+
+    fixed = runner.invoke(cli.app, [*base, "set-root", str(run_dir), "T1033-1-r1", "4000"])
+    assert fixed.exit_code == 0, fixed.output
+    assert RunDir.open(run_dir).get("T1033-1-r1").executor_root_pid == 4000  # type: ignore[union-attr]
+    relabel = runner.invoke(cli.app, ["-c", str(cfg_file), "label", str(run_dir)])
+    assert "0 malicious" not in relabel.output, relabel.output
+
+    missing = runner.invoke(cli.app, [*base, "set-root", str(run_dir), "nope", "1"])
+    assert missing.exit_code == 1

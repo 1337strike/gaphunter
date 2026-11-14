@@ -11,6 +11,8 @@ Lab and collection commands::
     gaphunter session end RUN                close the window, export + parse the logs
     gaphunter session collect RUN            retry collection for sessions that ended
     gaphunter session discard RUN ID         forget a session
+    gaphunter session processes RUN ID       processes started in a session (find the root PID)
+    gaphunter session set-root RUN ID PID    correct a session's root PID, then relabel
     gaphunter parse FILE.evtx... --out P     offline .evtx -> Parquet
 
 Analysis commands (all take the run directory)::
@@ -399,6 +401,56 @@ def session_discard(run_dir: Path, execution_id: str) -> None:
     typer.echo(f"discarded {execution_id}")
 
 
+@session_app.command("processes")
+def session_processes(
+    run_dir: Path,
+    execution_id: str,
+    width: Annotated[int, typer.Option(help="Characters of command line to show.")] = 90,
+) -> None:
+    """List the processes started during a session, to find its root PID."""
+    from gaphunter.roots import process_starts
+
+    try:
+        run = RunDir.open(run_dir)
+        session = run.get(execution_id)
+        if session is None:
+            raise RunStateError(f"no such session: {execution_id}")
+        starts = process_starts(run, session)
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    if not starts:
+        typer.echo("no process creations in this session's window")
+        return
+    typer.echo(
+        f"{'time (UTC)':<12} {'pid':>6} {'parent':>6}  {'parent image':<18} image / command line"
+    )
+    for p in starts:
+        mark = "  (GapHunter)" if p.control else ""
+        pid = "-" if p.pid is None else str(p.pid)
+        parent = "-" if p.parent_pid is None else str(p.parent_pid)
+        stamp = f"{p.ts:%H:%M:%S.%f}"[:12]
+        typer.echo(f"{stamp} {pid:>6} {parent:>6}  {p.parent_image[:18]:<18} {p.image}{mark}")
+        if p.command_line:
+            typer.echo(f"{'':<36}{p.command_line[:width]}")
+    typer.echo(
+        "\nThe root is the PowerShell you typed the test into: usually the parent of the first "
+        "process the test started.\nSet it with: gaphunter session set-root RUN "
+        f"{execution_id} PID"
+    )
+
+
+@session_app.command("set-root")
+def session_set_root(run_dir: Path, execution_id: str, root_pid: int) -> None:
+    """Correct a session's root PID; the next `gaphunter label` relabels it."""
+    from gaphunter.roots import set_root
+
+    try:
+        set_root(RunDir.open(run_dir), execution_id, root_pid)
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    typer.echo(f"{execution_id}: root PID set to {root_pid}; run 'gaphunter label' to relabel")
+
+
 # -- analysis pipeline ---------------------------------------------------------------
 
 
@@ -459,6 +511,10 @@ def label_cmd(
         typer.echo(f"window-only labels (no --root-pid): {', '.join(noisy)}")
     if empty:
         typer.echo(f"no telemetry from the root's lineage: {', '.join(empty)}")
+        typer.echo(
+            "If the root PID was wrong, list the session's processes with "
+            "'gaphunter session processes RUN ID' and fix it with 'gaphunter session set-root'."
+        )
 
 
 @app.command("features")

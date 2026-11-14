@@ -286,6 +286,15 @@ Pass the PID of the process the test was started from to `session end --root-pid
 PowerShell session that is `$PID`. Without it, labels fall back to "everything inside the
 window", which is much noisier.
 
+If the root PID was missed or mistyped, `label` reports "no telemetry from the root's
+lineage". Find the right one among the processes the session started, then relabel:
+
+```bash
+uv run gaphunter session processes "$RUN" T1082-1-r1
+uv run gaphunter session set-root "$RUN" T1082-1-r1 <PID>
+uv run gaphunter label "$RUN"
+```
+
 ### Benign baseline
 
 ```bash
