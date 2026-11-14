@@ -309,9 +309,20 @@ continues with the first slice that is not on disk. Add your own activities with
 
 ### Analysis
 
-Install Hayabusa (a single binary from its GitHub releases) and make sure
-`rules.hayabusa_bin` points to it. The default arguments are for Hayabusa 4.x; the
-3.x form is in a comment in `configs/gaphunter.yaml`.
+Install Hayabusa from its GitHub releases (tested with 4.4.0; the Linux build is
+`hayabusa-<version>-lin-x64-gnu.zip`, which contains the binary and its Sigma rules):
+
+```bash
+mkdir -p ~/tools/hayabusa && cd ~/tools/hayabusa
+curl -LO https://github.com/Yamato-Security/hayabusa/releases/download/v4.4.0/hayabusa-4.4.0-lin-x64-gnu.zip
+unzip -o hayabusa-4.4.0-lin-x64-gnu.zip && chmod +x hayabusa-4.4.0-lin-x64-gnu
+ln -sf hayabusa-4.4.0-lin-x64-gnu hayabusa
+```
+
+Point `rules.hayabusa_bin` in `configs/gaphunter.yaml` at `~/tools/hayabusa/hayabusa`
+(absolute path; keep the binary next to its `rules` and `config` folders). The default
+arguments are for Hayabusa 4.x; the 3.x form is in a comment in the config. The Hayabusa
+version is recorded in the run manifest.
 
 ```bash
 uv run gaphunter label "$RUN"

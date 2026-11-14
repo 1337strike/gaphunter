@@ -40,6 +40,10 @@ Changed
   (`gaphunter features`, `gaphunter train`).
 
 Fixed
+- Hayabusa has no `--version` flag; its version is now read from the banner of `hayabusa help`
+  (checked against the real 4.4.0 binary).
+- Rule alerts from imported files with arbitrary names took the file name as their channel;
+  Hayabusa's own channel abbreviation is now preferred.
 - A run whose root process left no events is reported as "no telemetry" instead of having
   every in-window event labelled malicious.
 

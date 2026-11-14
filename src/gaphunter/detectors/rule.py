@@ -58,6 +58,7 @@ _CHANNEL_ABBREVIATIONS: dict[str, str] = {
 _TECHNIQUE = re.compile(r"T\d{4}(?:\.\d{3})?", re.I)
 _SPLIT = re.compile(r"\s*[¦|,]\s*")
 _OFFSET_GAP = re.compile(r"\s+([+-]\d{2}:?\d{2})$")
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -78,15 +79,29 @@ def _get(record: dict[str, Any], *names: str) -> Any:
     return None
 
 
+_KNOWN_CHANNELS = frozenset({"sysmon", "security", "powershell"})
+
+
 def _channel(record: dict[str, Any]) -> str | None:
-    evtx = _get(record, "EvtxFile")
-    if evtx:  # our exports are named <alias>.evtx, which is the most reliable source
-        return Path(str(evtx).replace("\\", "/")).stem.lower()
+    """GapHunter's channel name for an alert.
+
+    Hayabusa abbreviates channels ("Sec", "Sysmon", "PwSh"). Those map directly; otherwise
+    the source file name is used when it is one of GapHunter's own exports
+    (``sysmon.evtx`` ...). Imported files can have any name, so the file name alone is
+    never trusted over a recognised channel.
+    """
     raw = _get(record, "Channel")
-    if raw is None:
-        return None
-    key = str(raw).lower()
-    return _CHANNEL_ABBREVIATIONS.get(key) or CHANNEL_ALIASES.get(key) or key
+    if raw is not None:
+        key = str(raw).strip().lower()
+        mapped = _CHANNEL_ABBREVIATIONS.get(key) or CHANNEL_ALIASES.get(key)
+        if mapped:
+            return mapped
+    evtx = _get(record, "EvtxFile")
+    if evtx:
+        stem = Path(str(evtx).replace("\\", "/")).stem.lower()
+        if stem in _KNOWN_CHANNELS:
+            return stem
+    return str(raw).strip().lower() if raw is not None else None
 
 
 def normalize_alert(record: dict[str, Any], execution_id: str) -> dict[str, Any] | None:
@@ -159,14 +174,18 @@ def hayabusa_argv(cfg: RuleConfig, evtx_dir: Path, output: Path) -> list[str]:
 
 
 def hayabusa_version(cfg: RuleConfig, runner: Runner = subprocess.run) -> str:
+    """Version line from Hayabusa's banner (it has no --version flag)."""
     try:
         proc = runner(
-            [cfg.hayabusa_bin, "--version"], capture_output=True, text=True, timeout=20, check=False
+            [cfg.hayabusa_bin, "help"], capture_output=True, text=True, timeout=20, check=False
         )
     except (OSError, subprocess.SubprocessError):
         return "unknown"
-    lines = (proc.stdout or proc.stderr or "").strip().splitlines()
-    return lines[0] if lines else "unknown"
+    text = _ANSI.sub("", (proc.stdout or "") + "\n" + (proc.stderr or ""))
+    for line in text.splitlines():
+        if line.strip().lower().startswith("hayabusa v"):
+            return line.strip()
+    return "unknown"
 
 
 def _invoke(cfg: RuleConfig, evtx_dir: Path, output: Path, label: str, runner: Runner) -> None:

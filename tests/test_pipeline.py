@@ -195,6 +195,15 @@ def test_hayabusa_alert_normalisation() -> None:
     assert alert["level_num"] == 5 and alert["channel"] == "security"
     assert alert["ts_utc"].hour == 2 and alert["mitre_tags"] == ["T1003", "T1003.001"]
     assert normalize_alert({"Level": "high"}, "e") is None
+    # Hayabusa 4.4 output for an imported file with an arbitrary name: trust the channel
+    imported = {
+        "Timestamp": "2018-07-28T07:27:41.456193Z", "Level": "info", "Channel": "Sec",
+        "RecordID": 181, "EvtxFile": "/runs/r/evtx/_imports/pc/2-system-Security-dirty.evtx",
+    }  # fmt: skip
+    alert = normalize_alert(imported, "e")
+    assert alert is not None and alert["channel"] == "security" and alert["level_num"] == 1
+    unknown = {"Timestamp": "2018-07-28T07:27:41Z", "Channel": "App", "EvtxFile": "x/sysmon.evtx"}
+    assert normalize_alert(unknown, "e")["channel"] == "sysmon"  # type: ignore[index]
 
 
 def test_technique_matching_handles_sub_techniques() -> None:
@@ -353,8 +362,9 @@ def test_import_baseline_and_group_rule_alerts(demo: tuple[RunDir, Config], tmp_
 
     def fake_hayabusa(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
-        if "--version" in argv:
-            return subprocess.CompletedProcess(argv, 0, "Hayabusa v9.9.9\n", "")
+        if argv[1:] == ["help"]:
+            banner = "\x1b[0mHayabusa v9.9.9 - Test Release\nYamato Security\n\nUsage:\n"
+            return subprocess.CompletedProcess(argv, 0, banner, "")
         out = Path(argv[argv.index("-o") + 1])
         hit = {
             "Timestamp": (second.start_utc.isoformat()).replace("+00:00", "Z"),
@@ -367,4 +377,4 @@ def test_import_baseline_and_group_rule_alerts(demo: tuple[RunDir, Config], tmp_
     alerts = run_rules(run, rules, runner=fake_hayabusa)
     assert alerts["execution_id"].tolist() == [second.execution_id]
     assert sum("_imports" in " ".join(c) for c in calls) == 1
-    assert run.manifest()["tool_versions"]["hayabusa"] == "Hayabusa v9.9.9"
+    assert run.manifest()["tool_versions"]["hayabusa"] == "Hayabusa v9.9.9 - Test Release"
