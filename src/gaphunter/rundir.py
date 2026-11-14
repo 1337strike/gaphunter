@@ -76,6 +76,8 @@ class Session(BaseModel):
     status: SessionStatus = "open"
     n_events: int | None = None
     notes: str | None = None
+    # Set for sessions created by `import-evtx` from one set of files.
+    import_group: str | None = None
 
 
 def make_execution_id(
@@ -147,6 +149,16 @@ class RunDir:
 
     def evtx_dir(self, execution_id: str) -> Path:
         return self.path / "evtx" / execution_id
+
+    def import_evtx_dir(self, group: str) -> Path:
+        return self.path / "evtx" / "_imports" / group
+
+    def import_alerts_path(self, group: str) -> Path:
+        return self.path / "alerts" / f"_import_{group}.jsonl"
+
+    @property
+    def models_dir(self) -> Path:
+        return self.path / "models"
 
     def events_path(self, execution_id: str) -> Path:
         return self.path / "events" / f"{execution_id}.parquet"

@@ -35,6 +35,8 @@ DETECTOR_COLORS: dict[str, str] = {
     "autoencoder": "#1baf7a",
     "ocsvm": "#eda100",
     "hybrid": "#e87ba4",
+    "rarity": "#008300",
+    "ensemble": "#6250d6",
 }
 DETECTOR_HATCH: dict[str, str] = {
     "rule": "",
@@ -42,6 +44,8 @@ DETECTOR_HATCH: dict[str, str] = {
     "autoencoder": "///",
     "ocsvm": "xx",
     "hybrid": "\\\\\\",
+    "rarity": "++",
+    "ensemble": "///",
 }
 DETECTOR_DASH: dict[str, Any] = {
     "rule": "-",
@@ -49,18 +53,24 @@ DETECTOR_DASH: dict[str, Any] = {
     "autoencoder": (0, (1, 1)),
     "ocsvm": (0, (4, 1, 1, 1)),
     "hybrid": (0, (6, 2)),
+    "rarity": (0, (3, 1, 1, 1, 1, 1)),
+    "ensemble": (0, (5, 1)),
 }
 DETECTOR_NAMES: dict[str, str] = {
     "rule": "Sigma rules",
     "iforest": "Isolation Forest",
     "autoencoder": "Autoencoder",
     "ocsvm": "One-Class SVM",
+    "rarity": "Rarity",
+    "ensemble": "Ensemble",
 }
 DETECTOR_SHORT: dict[str, str] = {
     "rule": "Rules",
     "iforest": "IF",
     "autoencoder": "AE",
     "ocsvm": "OC-SVM",
+    "rarity": "Rarity",
+    "ensemble": "Ens.",
 }
 SEQUENTIAL = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
 INK, INK_SECONDARY, MUTED, GRID, AXIS = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
@@ -279,7 +289,7 @@ def fig_tactic_coverage(data: dict[str, Any], path: Path) -> bool:
         return False
     plt = _pyplot()
     order = [t for t in TACTIC_ORDER if t in set(tactics["tactic"])]
-    fig, ax = plt.subplots(figsize=(COLUMN_WIDTH_IN, 2.1))
+    fig, ax = plt.subplots(figsize=(COLUMN_WIDTH_IN, 2.1), layout="constrained")
     group, gap = 0.78, 0.02
     width = group / len(series)
     x = np.arange(len(order))
@@ -316,7 +326,7 @@ def _curve_figure(data: dict[str, Any], path: Path, kind: str) -> bool:
     if not curves:
         return False
     plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(COLUMN_WIDTH_IN, 2.6))
+    fig, ax = plt.subplots(figsize=(COLUMN_WIDTH_IN, 2.6), layout="constrained")
     for detector, points in curves.items():
         key = detector_key(detector)
         xs, ys = (
@@ -361,7 +371,7 @@ def fig_technique_heatmap(data: dict[str, Any], path: Path) -> bool:
 
     matrix = techniques[[f"{d}_rate" for d in detectors]].to_numpy(dtype=float)
     n_rows, n_cols = matrix.shape
-    fig, ax = plt.subplots(figsize=(COLUMN_WIDTH_IN, 0.55 + 0.15 * n_rows))
+    fig, ax = plt.subplots(figsize=(COLUMN_WIDTH_IN, 0.55 + 0.15 * n_rows), layout="constrained")
     cmap = LinearSegmentedColormap.from_list("gaphunter_blue", SEQUENTIAL)
     image = ax.imshow(np.ma.masked_invalid(matrix), cmap=cmap, vmin=0, vmax=1, aspect="auto")
     for r in range(n_rows):
@@ -508,6 +518,174 @@ def latex_tables(data: dict[str, Any]) -> dict[str, str]:
     return tables
 
 
+# -- HTML ----------------------------------------------------------------------------
+
+_HTML_STYLE = """
+:root { color-scheme: light; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --line:#e1e0d9;
+        --surface:#fcfcfb; --card:#ffffff; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--surface); color:var(--ink);
+       font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+main { max-width:980px; margin:0 auto; padding:32px 20px 64px; }
+h1 { font-size:26px; margin:0 0 4px; letter-spacing:-0.01em; }
+h2 { font-size:17px; margin:36px 0 12px; }
+p.lead { color:var(--ink2); margin:0 0 20px; }
+.banner { background:#fdecec; border:1px solid #e34948; color:#7a1414; padding:10px 14px;
+          border-radius:8px; margin:0 0 20px; font-weight:600; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+.card .n { font-size:28px; font-weight:650; line-height:1.1; font-variant-numeric:tabular-nums; }
+.card .l { color:var(--ink2); font-size:13px; margin-top:4px; }
+.dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:7px;
+       vertical-align:baseline; }
+table { border-collapse:collapse; width:100%; background:var(--card); border:1px solid var(--line);
+        border-radius:10px; overflow:hidden; font-variant-numeric:tabular-nums; }
+th, td { padding:8px 12px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+th:first-child, td:first-child, td.t, th.t { text-align:left; }
+td.t { white-space:normal; }
+th { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink2);
+     background:#f6f5f1; font-weight:600; }
+tr:last-child td { border-bottom:0; }
+.scroll { overflow-x:auto; }
+.figs { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+figure { margin:0; background:var(--card); border:1px solid var(--line); border-radius:10px;
+         padding:12px; }
+figure svg { width:100%; height:auto; display:block; }
+figcaption { color:var(--ink2); font-size:13px; margin-top:8px; }
+footer { color:var(--muted); font-size:12px; margin-top:40px; }
+code { font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
+"""
+
+_FIGURE_CAPTIONS: dict[str, str] = {
+    "fig_tactic_coverage": "Share of techniques detected per ATT&CK tactic.",
+    "fig_technique_heatmap": "Share of runs detected, per technique and detector.",
+    "fig_roc": "ROC: malicious windows against benign test windows.",
+    "fig_pr": "Precision-recall for the same windows.",
+}
+
+
+def _svg_figures(data: dict[str, Any], workdir: Path) -> dict[str, str]:
+    """Render the figures as SVG text (fonts converted to outlines, so self-contained)."""
+    drawers: dict[str, Callable[[Path], bool]] = {
+        "fig_tactic_coverage": lambda p: fig_tactic_coverage(data, p),
+        "fig_technique_heatmap": lambda p: fig_technique_heatmap(data, p),
+        "fig_roc": lambda p: _curve_figure(data, p, "roc"),
+        "fig_pr": lambda p: _curve_figure(data, p, "pr"),
+    }
+    out: dict[str, str] = {}
+    for name, draw in drawers.items():
+        path = workdir / f"{name}.svg"
+        if draw(path):
+            text = path.read_text(encoding="utf-8")
+            out[name] = text[text.index("<svg") :]
+            path.unlink()
+    return out
+
+
+def _cell(value: float, digits: int = 3) -> str:
+    return "&ndash;" if value != value else f"{value:.{digits}f}"
+
+
+def html_report(data: dict[str, Any], figures: dict[str, str], manifest: dict[str, Any]) -> str:
+    """A single self-contained HTML page: headline numbers, tables and figures."""
+    from html import escape
+
+    summary, techniques = data["summary"], data["techniques"]
+    series = headline_detectors(summary)
+    parts: list[str] = [
+        "<!DOCTYPE html>",
+        '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>GapHunter coverage report</title>",
+        f"<style>{_HTML_STYLE}</style></head><body><main>",
+        "<h1>Detection coverage report</h1>",
+        f'<p class="lead">Run <code>{escape(str(manifest.get("run_id", "")))}</code> &middot; '
+        f"{summary['n_techniques']} techniques, {summary['n_attack_runs']} runs &middot; "
+        f"ML threshold at {100 * float(summary['target_fpr']):g}% false-positive rate &middot; "
+        f"rules at level &ge; {escape(str(summary['rule_min_level']))}</p>",
+    ]
+    if summary.get("synthetic"):
+        parts.append(f'<div class="banner">{escape(SYNTHETIC_NOTE)}</div>')
+
+    gaps = summary.get("gap_counts", {})
+    if gaps:
+        parts.append('<div class="cards">')
+        for key in GAP_COLORS:
+            parts.append(
+                f'<div class="card"><div class="n">{int(gaps.get(key, 0))}</div>'
+                f'<div class="l"><span class="dot" style="background:{GAP_COLORS[key]}"></span>'
+                f"{escape(GAP_LABELS[key])}</div></div>"
+            )
+        parts.append("</div>")
+
+    parts.append('<h2>Detectors</h2><div class="scroll"><table><thead><tr>')
+    parts += [
+        f"<th>{h}</th>"
+        for h in ("Detector", "Precision", "Recall", "F1", "FPR", "ROC-AUC", "PR-AUC",
+                  "Techniques", "Median latency (s)")
+    ]  # fmt: skip
+    parts.append("</tr></thead><tbody>")
+    for _, row in data["detectors"].iterrows():
+        covered = f"{int(row['techniques_detected'])}/{int(row['techniques_with_telemetry'])}"
+        cells = [
+            _cell(float(row[k])) for k in ("precision", "recall", "f1", "fpr", "roc_auc", "pr_auc")
+        ]
+        parts.append(
+            f"<tr><td>{escape(detector_name(str(row['detector'])))}</td>"
+            + "".join(f"<td>{c}</td>" for c in cells)
+            + f"<td>{covered}</td><td>{_cell(float(row['median_latency_s']), 1)}</td></tr>"
+        )
+    parts.append("</tbody></table></div>")
+
+    if figures:
+        parts.append('<h2>Figures</h2><div class="figs">')
+        for name, svg in figures.items():
+            parts.append(
+                f"<figure>{svg}<figcaption>{escape(_FIGURE_CAPTIONS.get(name, ''))}</figcaption></figure>"
+            )
+        parts.append("</div>")
+
+    parts.append('<h2>Techniques</h2><div class="scroll"><table><thead><tr>')
+    parts += ["<th>ID</th>", '<th class="t">Technique</th>', '<th class="t">Tactics</th>']
+    parts += [f"<th>{escape(detector_name(d))}</th>" for d in series]
+    parts.append('<th class="t">Outcome</th></tr></thead><tbody>')
+    for _, row in techniques.iterrows():
+        seen = int(row["n_runs_with_telemetry"])
+        rates = [
+            "&ndash;" if seen == 0 else f"{100 * float(row[f'{d}_rate']):.0f}%" for d in series
+        ]
+        gap = str(row.get("gap_category", ""))
+        chip = (
+            f'<span class="dot" style="background:{GAP_COLORS[gap]}"></span>{escape(GAP_LABELS[gap])}'
+            if gap in GAP_COLORS
+            else ""
+        )
+        tactics = ", ".join(tactic_label(t) for t in str(row["tactics"]).split(";"))
+        parts.append(
+            f"<tr><td>{escape(str(row['technique_id']))}</td>"
+            f'<td class="t">{escape(str(row["name"]))}</td><td class="t">{escape(tactics)}</td>'
+            + "".join(f"<td>{r}</td>" for r in rates)
+            + f'<td class="t">{chip}</td></tr>'
+        )
+    parts.append("</tbody></table></div>")
+
+    versions = manifest.get("tool_versions", {})
+    guest = manifest.get("guest", {})
+    facts = [
+        f"GapHunter {escape(str(versions.get('gaphunter', '?')))}",
+        f"seed {escape(str(manifest.get('seed', '?')))}",
+        f"window {summary['window_s']:g} s",
+        "benign windows "
+        + " / ".join(f"{k} {int(v)}" for k, v in summary["split_sizes"].items() if k != "attack"),
+    ]
+    if guest.get("sysmon_version"):
+        facts.append(f"Sysmon {escape(str(guest['sysmon_version']))}")
+    if versions.get("hayabusa"):
+        facts.append(escape(str(versions["hayabusa"])))
+    parts.append(f"<footer>{' &middot; '.join(facts)}</footer></main></body></html>")
+    return "\n".join(parts)
+
+
 # -- entry point ---------------------------------------------------------------------
 
 
@@ -573,6 +751,9 @@ def build_report(run: RunDir, output: Path) -> list[str]:
             written.append(csv_name)
     shutil.copyfile(run.manifest_path, output / "manifest.json")
     written.append("manifest.json")
+    page = html_report(data, _svg_figures(data, output), run.manifest())
+    (output / "report.html").write_text(page, encoding="utf-8")
+    written.append("report.html")
     (output / "report.md").write_text(summary_markdown(data, written), encoding="utf-8")
     written.append("report.md")
     log.info("report.done", output=str(output), files=len(written))

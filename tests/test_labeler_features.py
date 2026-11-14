@@ -220,3 +220,37 @@ def test_session_windows_labels_and_exclusions() -> None:
 
     keep_root = session_windows(labeled, session(), FeatureConfig(exclude_root_process=False))
     assert keep_root.iloc[0]["n_events"] == 7
+
+
+def test_process_tree_and_launch_context_features() -> None:
+    def proc(pid: int, guid: str, ppid: int, pguid: str, image: str, cmd: str) -> dict[str, Any]:
+        return ev(
+            1, "sysmon", 1, pid=pid, process_guid=guid, parent_pid=ppid,
+            parent_process_guid=pguid, image=image, command_line=cmd,
+            parent_image="C:\\Windows\\explorer.exe",
+        )  # fmt: skip
+
+    events = frame(
+        [
+            proc(10, "{a}", 1, "{r}", "C:\\Windows\\System32\\cmd.exe", "cmd /c x"),
+            proc(
+                11,
+                "{b}",
+                10,
+                "{a}",
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "p" * 400,
+            ),
+            proc(12, "{c}", 11, "{b}", "C:\\Users\\u\\AppData\\Local\\Temp\\t.exe", "t.exe"),
+            proc(13, "{d}", 1, "{r}", "C:\\Windows\\System32\\notepad.exe", "notepad"),
+            proc(14, "{e}", 1, "{r}", "C:\\ProgramData\\x\\y.exe", "y.exe"),
+        ]
+    )
+    f = window_features(events, FeatureConfig())
+    assert f["f_proc_max_depth"] == 3  # a -> b -> c
+    assert f["f_proc_max_children"] == 3  # {r} started a, d and e
+    assert f["f_proc_user_writable"] == 2
+    assert f["f_proc_script_host"] == 2
+    assert f["f_cmd_long_count"] == 1
+    empty = window_features(frame([ev(1, "sysmon", 3, pid=1)]), FeatureConfig())
+    assert empty["f_proc_max_depth"] == 0 and empty["f_proc_max_children"] == 0

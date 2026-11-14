@@ -169,50 +169,139 @@ def hayabusa_version(cfg: RuleConfig, runner: Runner = subprocess.run) -> str:
     return lines[0] if lines else "unknown"
 
 
+def _invoke(cfg: RuleConfig, evtx_dir: Path, output: Path, label: str, runner: Runner) -> None:
+    """Run Hayabusa on one directory, leaving a (possibly empty) file at ``output``."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+    argv = hayabusa_argv(cfg, evtx_dir, tmp)
+    try:
+        proc = runner(argv, capture_output=True, text=True, timeout=cfg.timeout_s, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise GapHunterError(f"hayabusa timed out on {label}") from exc
+    except FileNotFoundError as exc:
+        raise GapHunterError(f"Hayabusa binary {cfg.hayabusa_bin!r} not found") from exc
+    if proc.returncode != 0:
+        raise GapHunterError(
+            f"hayabusa failed on {label} (exit {proc.returncode}): "
+            f"{(proc.stderr or proc.stdout or '').strip()[-500:]}\n"
+            "If the flags are wrong for your Hayabusa version, adjust rules.args."
+        )
+    if not tmp.exists():  # no detections: some versions write no file at all
+        tmp.write_text("", encoding="utf-8")
+    tmp.replace(output)
+
+
+def require_hayabusa(cfg: RuleConfig) -> None:
+    if shutil.which(cfg.hayabusa_bin) is None and not Path(cfg.hayabusa_bin).is_file():
+        raise GapHunterError(
+            f"Hayabusa binary {cfg.hayabusa_bin!r} not found. Install it and set "
+            "rules.hayabusa_bin in the config."
+        )
+
+
 def run_rules(
     run: RunDir, cfg: RuleConfig, *, force: bool = False, runner: Runner = subprocess.run
 ) -> pd.DataFrame:
-    """Run Hayabusa for each collected session (resumable) and write ``alerts.parquet``."""
+    """Run Hayabusa for each collected session (resumable) and write ``alerts.parquet``.
+
+    Sessions that came from one ``import-evtx`` call share their source files, so Hayabusa
+    runs once per import and its alerts are assigned to the sessions by time.
+    """
     sessions = run.collected()
-    todo = [s for s in sessions if force or not run.alerts_raw_path(s.execution_id).exists()]
-    if todo:
-        if shutil.which(cfg.hayabusa_bin) is None and not Path(cfg.hayabusa_bin).is_file():
-            raise GapHunterError(
-                f"Hayabusa binary {cfg.hayabusa_bin!r} not found. Install it and set "
-                "rules.hayabusa_bin in the config."
-            )
+    own = [s for s in sessions if s.import_group is None]
+    groups = sorted({s.import_group for s in sessions if s.import_group is not None})
+    todo = [s for s in own if force or not run.alerts_raw_path(s.execution_id).exists()]
+    todo_groups = [
+        g
+        for g in groups
+        if run.import_evtx_dir(g).is_dir() and (force or not run.import_alerts_path(g).exists())
+    ]
+    if todo or todo_groups:
+        require_hayabusa(cfg)
         run.record_tool_version("hayabusa", hayabusa_version(cfg, runner))
     for session in todo:
-        evtx_dir = run.evtx_dir(session.execution_id)
-        output = run.alerts_raw_path(session.execution_id)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        tmp = output.with_suffix(".tmp")
-        tmp.unlink(missing_ok=True)
-        argv = hayabusa_argv(cfg, evtx_dir, tmp)
-        try:
-            proc = runner(argv, capture_output=True, text=True, timeout=cfg.timeout_s, check=False)
-        except subprocess.TimeoutExpired as exc:
-            raise GapHunterError(f"hayabusa timed out on {session.execution_id}") from exc
-        if proc.returncode != 0:
-            raise GapHunterError(
-                f"hayabusa failed on {session.execution_id} (exit {proc.returncode}): "
-                f"{(proc.stderr or proc.stdout or '').strip()[-500:]}\n"
-                "If the flags are wrong for your Hayabusa version, adjust rules.args."
-            )
-        if not tmp.exists():  # no detections: some versions write no file at all
-            tmp.write_text("", encoding="utf-8")
-        tmp.replace(output)
+        _invoke(
+            cfg,
+            run.evtx_dir(session.execution_id),
+            run.alerts_raw_path(session.execution_id),
+            session.execution_id,
+            runner,
+        )
         log.info("rules.session", execution_id=session.execution_id)
+    for group in todo_groups:
+        _invoke(
+            cfg,
+            run.import_evtx_dir(group),
+            run.import_alerts_path(group),
+            f"import {group}",
+            runner,
+        )
+        log.info("rules.import", group=group)
 
     rows: list[dict[str, Any]] = []
-    for session in sessions:
+    for session in own:
         path = run.alerts_raw_path(session.execution_id)
         if path.exists():
             rows.extend(parse_alerts(path, session.execution_id))
+    for group in groups:
+        path = run.import_alerts_path(group)
+        if not path.exists():
+            log.warning("rules.import_without_evtx", group=group, hint="no rule alerts for it")
+            continue
+        # Latest-starting slice first: an alert exactly on a boundary belongs to the
+        # slice that starts there, like the events themselves.
+        members = sorted(
+            (s for s in sessions if s.import_group == group),
+            key=lambda s: s.start_utc,
+            reverse=True,
+        )
+        for alert in parse_alerts(path, group):
+            for session in members:
+                if session.end_utc is not None and (
+                    session.start_utc <= alert["ts_utc"] <= session.end_utc
+                ):
+                    rows.append({**alert, "execution_id": session.execution_id})
+                    break
     table = pa.Table.from_pylist(rows, schema=ALERTS_SCHEMA)
     pq.write_table(table, run.alerts_path)
     log.info("rules.done", alerts=len(rows), sessions=len(sessions))
     return table.to_pandas()
+
+
+def detect_rule_alerts(
+    evtx_files: list[Path], cfg: RuleConfig, workdir: Path, *, runner: Runner = subprocess.run
+) -> list[dict[str, Any]]:
+    """Run Hayabusa on arbitrary .evtx files and return alerts at or above ``min_level``."""
+    require_hayabusa(cfg)
+    source = workdir / "evtx"
+    source.mkdir(parents=True, exist_ok=True)
+    for path in evtx_files:
+        shutil.copyfile(path, source / path.name)
+    output = workdir / "alerts.jsonl"
+    _invoke(cfg, source, output, "the given files", runner)
+    minimum = LEVELS[cfg.min_level]
+    alerts: list[dict[str, Any]] = []
+    for record in read_alert_file(output):
+        alert = normalize_alert(record, "detect")
+        if alert is None or alert["level_num"] < minimum:
+            continue
+        alerts.append(
+            {
+                "type": "rule",
+                "host": _get(record, "Computer"),
+                "time": alert["ts_utc"].isoformat(),
+                "window_start": alert["ts_utc"].isoformat(),
+                "severity": alert["level"],
+                "rule_title": alert["rule_title"],
+                "rule_file": alert["rule_file"],
+                "mitre_tags": alert["mitre_tags"],
+                "channel": alert["channel"],
+                "event_id": alert["event_id"],
+                "record_id": alert["record_id"],
+            }
+        )
+    return alerts
 
 
 def _excluded_records(run: RunDir, execution_id: str, drop: set[str]) -> set[tuple[str, int]]:

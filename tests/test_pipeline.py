@@ -203,3 +203,145 @@ def test_technique_matching_handles_sub_techniques() -> None:
     assert technique_matches(["T1059.001"], "T1059")
     assert not technique_matches(["T1059.003"], "T1059.001")
     assert not technique_matches(["T1082"], None)
+
+
+# -- 0.2: rarity, ensemble, deployable bundles, detection, import ---------------------
+
+
+def test_scores_include_rarity_and_ensemble(demo: tuple[RunDir, Config]) -> None:
+    scores = pd.read_parquet(demo[0].scores_path)
+    assert {"iforest", "autoencoder", "rarity", "ensemble"} <= set(scores["detector"])
+    ensemble = scores[scores["detector"] == "ensemble"]
+    assert set(ensemble["config_id"]) == {"ensemble#0"} and ensemble["score"].notna().all()
+
+
+def test_rarity_detector_scores_unseen_buckets() -> None:
+    from gaphunter.detectors.ml import RarityDetector
+
+    columns = ["f_n_events", "f_tok_000", "f_tok_001", "f_img_00", "f_pair_00"]
+    benign = np.array([[5, 1, 0, 1, 0]] * 50, dtype=float)
+    model = RarityDetector({"top_k": 2}, columns)
+    model.fit(benign)
+    seen, unseen = model.score(np.array([[500, 3, 0, 1, 0], [5, 1, 2, 1, 4]], dtype=float))
+    assert unseen > 10 * max(seen, 1e-9)  # event volume alone does not matter
+    assert model.uses_raw
+
+
+@pytest.fixture(scope="module")
+def bundle_path(demo: tuple[RunDir, Config], tmp_path_factory: pytest.TempPathFactory) -> Path:
+    from gaphunter.deploy import fit_bundle, save_bundle
+
+    run, cfg = demo
+    path = tmp_path_factory.mktemp("models") / "ensemble.joblib"
+    save_bundle(fit_bundle(run, cfg, "ensemble"), path)
+    return path
+
+
+def _events(run: RunDir, execution_id: str) -> pd.DataFrame:
+    from gaphunter.collector.store import read_events
+
+    frame = read_events(run.labeled_path(execution_id)).to_pandas()
+    frame["label"] = False  # detection sees unlabelled logs
+    frame["label_reason"] = None
+    return frame
+
+
+def test_bundle_roundtrip_detects_and_explains(
+    demo: tuple[RunDir, Config], bundle_path: Path
+) -> None:
+    from gaphunter.deploy import detect_events, load_bundle, render_alert
+
+    run, cfg = demo
+    bundle = load_bundle(bundle_path)
+    card = json.loads(Path(str(bundle_path) + ".json").read_text())
+    assert card["name"] == "ensemble" and card["synthetic"] is True
+    assert [m["detector"] for m in card["members"]] == ["iforest", "autoencoder", "rarity"]
+
+    alerts, summary = detect_events(_events(run, "T1082-1-r1"), bundle, cfg.detect)
+    assert summary["windows"] >= 2 and summary["alerts"] == len(alerts) >= 1
+    alert = alerts[0]
+    assert alert["type"] == "ml" and alert["host"] == "SYNTH-HOST"
+    assert alert["score"] > alert["threshold"] and alert["severity"] in {"low", "medium", "high"}
+    explanation = alert["explanation"]
+    assert explanation["top_features"] and all("what" in f for f in explanation["top_features"])
+    assert "synth-tool" in explanation["rarest_commands"][0]["text"]
+    assert any(p["image"].startswith("synth-") for p in explanation["programs_started"])
+    text = render_alert(alert)
+    assert "score" in text and "synth-tool" in text
+
+    quiet, quiet_summary = detect_events(_events(run, "baseline-0010"), bundle, cfg.detect)
+    assert len(quiet) <= 1 and quiet_summary["windows"] > 5
+
+    plain, _ = detect_events(_events(run, "T1082-1-r1"), bundle, cfg.detect, explain=False)
+    assert "explanation" not in plain[0]
+
+
+def test_load_bundle_rejects_other_files(tmp_path: Path) -> None:
+    import joblib
+
+    from gaphunter.deploy import load_bundle
+    from gaphunter.errors import GapHunterError
+
+    with pytest.raises(GapHunterError, match="not found"):
+        load_bundle(tmp_path / "missing.joblib")
+    other = tmp_path / "other.joblib"
+    joblib.dump({"not": "a bundle"}, other)
+    with pytest.raises(GapHunterError, match="not a GapHunter model bundle"):
+        load_bundle(other)
+    garbage = tmp_path / "garbage.joblib"
+    garbage.write_bytes(b"nope")
+    with pytest.raises(GapHunterError, match="cannot load"):
+        load_bundle(garbage)
+
+
+def test_import_baseline_and_group_rule_alerts(demo: tuple[RunDir, Config], tmp_path: Path) -> None:
+    import subprocess
+
+    from gaphunter.errors import GapHunterError
+    from gaphunter.importer import import_attack, import_baseline
+
+    source, cfg = demo
+    local = cfg.model_copy(update={"results_dir": tmp_path / "results"})
+    run = RunDir.create(local, name="own")
+    events = pd.concat([_events(source, f"baseline-{i:04d}") for i in (1, 2, 3)])
+    evtx = tmp_path / "sysmon.evtx"
+    evtx.write_bytes(b"placeholder")
+    created = import_baseline(run, events, name="pc 01", slice_minutes=5, evtx_files=[evtx])
+    assert created[0] == "baseline-pc_01-0001" and len(created) >= 4
+    sessions = run.collected()
+    assert {s.import_group for s in sessions} == {"pc_01"}
+    assert sum(s.n_events or 0 for s in sessions) == len(events)
+    assert (run.import_evtx_dir("pc_01") / "sysmon.evtx").is_file()
+    with pytest.raises(GapHunterError, match="already exists"):
+        import_baseline(run, events, name="pc 01", slice_minutes=5)
+    mixed = events.copy()
+    mixed.loc[mixed.index[:3], "host"] = "OTHER"
+    with pytest.raises(GapHunterError, match="each host separately"):
+        import_baseline(run, mixed, name="mixed", slice_minutes=5)
+
+    execution_id = import_attack(
+        run, _events(source, "T1082-1-r1"), technique="T1082", test=1, rep=1, root_pid=9001
+    )
+    assert execution_id == "T1082-1-r1" and run.get(execution_id).executor_root_pid == 9001  # type: ignore[union-attr]
+
+    # Hayabusa runs once for the import; its alerts are assigned to slices by time.
+    second = sessions[1]
+    calls: list[list[str]] = []
+
+    def fake_hayabusa(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if "--version" in argv:
+            return subprocess.CompletedProcess(argv, 0, "Hayabusa v9.9.9\n", "")
+        out = Path(argv[argv.index("-o") + 1])
+        hit = {
+            "Timestamp": (second.start_utc.isoformat()).replace("+00:00", "Z"),
+            "RuleTitle": "t", "Level": "high", "Channel": "Sysmon", "RecordID": 1,
+        }  # fmt: skip
+        out.write_text(json.dumps(hit) + "\n" if "_imports" in " ".join(argv) else "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    rules = cfg.rules.model_copy(update={"hayabusa_bin": str(evtx)})  # any existing file
+    alerts = run_rules(run, rules, runner=fake_hayabusa)
+    assert alerts["execution_id"].tolist() == [second.execution_id]
+    assert sum("_imports" in " ".join(c) for c in calls) == 1
+    assert run.manifest()["tool_versions"]["hayabusa"] == "Hayabusa v9.9.9"

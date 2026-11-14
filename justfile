@@ -58,3 +58,11 @@ analyze run:
     uv run gaphunter train {{run}}
     uv run gaphunter evaluate {{run}}
     uv run gaphunter report {{run}}
+
+# Train a deployable model from a run (default: the ensemble)
+export-model run:
+    uv run gaphunter export-model {{run}}
+
+# Build the container image
+docker:
+    docker build -t gaphunter .

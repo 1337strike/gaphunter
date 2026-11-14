@@ -17,9 +17,10 @@ framework; GapHunter only needs to know *when* each test ran and from which proc
 | Labels | `label` | `labeled/*.parquet` |
 | Features | `features` | `windows.parquet` |
 | Rule detector | `rules` (Hayabusa + Sigma) | `alerts.parquet` |
-| ML detectors | `train` (Isolation Forest, autoencoder, optional One-Class SVM) | `scores.parquet` |
+| ML detectors | `train` (Isolation Forest, autoencoder, rarity, ensemble; optional One-Class SVM) | `scores.parquet` |
 | Evaluation | `evaluate` | `eval/*.csv`, `eval/metrics.json` |
-| Reporting | `report` | Navigator layers, PDF figures, LaTeX tables, CSV |
+| Reporting | `report` | Navigator layers, PDF figures, LaTeX tables, CSV, `report.html` |
+| Deployment | `import-evtx`, `export-model`, `detect`, `explain` | model bundle, explained alerts (JSON lines) |
 
 ## Try it without a lab
 
@@ -246,6 +247,64 @@ State is written after every step (`state.json`), so nothing is redone needlessl
 uv run gaphunter parse some.evtx other.evtx --out events.parquet
 ```
 
+## Using it on your own environment
+
+The lab answers "which techniques do my rules miss, and does ML catch them?". The same
+models can then watch real logs. Train on what is normal for *your* machines:
+
+```bash
+RUN=$(uv run gaphunter run init --name fleet)
+
+# 1. Benign logs from a machine you trust to be clean (one host per import).
+#    Export them on that machine, for example:
+#    wevtutil epl Microsoft-Windows-Sysmon/Operational sysmon.evtx
+uv run gaphunter import-evtx "$RUN" pc01/sysmon.evtx pc01/security.evtx pc01/powershell.evtx --name pc01
+
+# 2. Features and a deployable model
+uv run gaphunter label "$RUN"
+uv run gaphunter features "$RUN"
+uv run gaphunter export-model "$RUN" -o models/workstation.joblib
+
+# 3. Score new logs (add --rules to run Hayabusa on the same files)
+uv run gaphunter detect new/sysmon.evtx new/security.evtx -m models/workstation.joblib -o alerts.jsonl
+```
+
+Each ML alert says why it fired:
+
+```
+[HIGH  ] 2026-11-14T02:13:30+00:00  PC01  score 14.2 > 3.86  (212 events)
+    - highest command-line entropy: 5.66 (benign ~4.2)
+    - processes started with High integrity: 10 (benign ~0)
+    - program names: 3  e.g. tool-x.exe
+    > C:\Users\u\AppData\Local\Temp\tool-x.exe --mode ...
+```
+
+Things to know before relying on it:
+
+- **Train per machine role.** A model of developer workstations will flag a domain
+  controller constantly. `detect` warns when more than a fifth of the windows alert,
+  which almost always means the baseline does not match the logs.
+- **False alerts scale with volume.** At the default 1% threshold, a day of 30 s windows
+  (2,880) yields about 29 false ML alerts per host. Lower `ml.target_fpr` and collect a
+  longer baseline before using it for alerting; with few validation windows the threshold
+  cannot be set finer than one over their number.
+- **Batch, not streaming.** `detect` reads whole `.evtx` exports into memory; schedule it
+  (cron, a pipeline step) on periodic exports. Very large files need a machine with
+  enough RAM.
+- **Your own Sigma rules:** add Hayabusa's rule options to `rules.args` in the config.
+- **Model bundles are pickles.** Only load bundles you created; see `SECURITY.md`.
+- Importing red-team exercise logs with `--kind attack --technique T... --root-pid N`
+  lets you measure coverage on your own hosts with the same evaluation as the lab.
+
+### Container
+
+```bash
+docker build -t gaphunter .
+docker run --rm -v "$PWD:/work" gaphunter detect /work/new/sysmon.evtx -m /work/models/workstation.joblib
+```
+
+The image covers analysis and detection; lab control needs libvirt on the KVM host.
+
 ## Run directory
 
 ```
@@ -300,11 +359,12 @@ See `docs/methodology.md` for a write-up you can adapt for the paper.
 - **Features:** per 30 s window; event-ID counts, process and parent names, command-line
   statistics (length, entropy, special characters, base64), hashed command-line tokens,
   integrity levels, registry path categories, file and network counts.
-- **ML:** trained on benign windows only; thresholds from held-out benign validation
-  windows at a target false-positive rate (default 1%).
+- **ML:** Isolation Forest, autoencoder and a rarity score, plus their ensemble; trained
+  on benign windows only; thresholds from held-out benign validation windows at a target
+  false-positive rate (default 1%).
 - **Leave-technique-out:** hyper-parameters used for a technique are chosen using only
   the other techniques.
-- **Hybrid:** rule OR ML.
+- **Hybrid:** rule OR ML (by default the ensemble; `ml.hybrid_ml` selects another).
 
 ## Assumptions and threats to validity
 
@@ -344,4 +404,4 @@ just types    # mypy --strict
 
 ## License
 
-MIT
+Apache-2.0. See `LICENSE` and `NOTICE`. Commercial use is permitted under its terms.
