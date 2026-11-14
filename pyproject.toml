@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gaphunter"
+version = "0.1.0"
+description = "Measure detection coverage gaps: Sigma rules vs. ML anomaly detection on Sysmon logs"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "structlog>=24.1",
+    "pyarrow>=15.0",
+    "evtx>=0.8",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scikit-learn>=1.4",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# libvirt-python needs the libvirt headers (Arch: pacman -S libvirt).
+lab = ["libvirt-python>=10.0"]
+# PyTorch autoencoder backend. Without it GapHunter uses its NumPy autoencoder.
+# CPU-only wheels: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch = ["torch>=2.2"]
+dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.10", "types-PyYAML"]
+
+[project.scripts]
+gaphunter = "gaphunter.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gaphunter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Typer's API puts typer.Option(...) calls in argument defaults.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# long literal command strings / synthetic rows read better on one line
+"src/gaphunter/baseline.py" = ["E501"]
+"src/gaphunter/synth.py" = ["E501"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true

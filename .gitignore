@@ -1,0 +1,13 @@
+.env
+.gaphunter/
+results/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+dist/
+*.egg-info/
+*.evtx
+!tests/fixtures/*.evtx

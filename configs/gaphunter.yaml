@@ -1,0 +1,66 @@
+# GapHunter configuration. No secrets here: the SSH user and key path come from .env.
+seed: 1337
+results_dir: results
+
+lab:
+  libvirt_uri: qemu:///system
+  domain: gh-win10          # libvirt domain name of the Windows 10 VM
+  snapshot: clean           # snapshot reverted to before each session
+  ready_timeout_s: 300
+  ready_poll_s: 5
+  settle_s: 15              # idle time after SSH first answers
+
+ssh:
+  host: 10.66.66.10         # static DHCP lease from lab/gaphunter-isolated.xml
+  port: 22
+  user_env: GAPHUNTER_SSH_USER
+  key_env: GAPHUNTER_SSH_KEY
+  known_hosts: .gaphunter/known_hosts
+  connect_timeout_s: 10
+  command_timeout_s: 300
+
+collector:
+  remote_dir: 'C:\gaphunter\export'
+  channels:
+    sysmon: Microsoft-Windows-Sysmon/Operational
+    security: Security
+    powershell: Microsoft-Windows-PowerShell/Operational
+  pad_before_s: 2
+  pad_after_s: 3            # must be <= flush_wait_s
+  flush_wait_s: 5
+
+baseline:
+  slice_minutes: 10
+  min_gap_s: 5
+  max_gap_s: 45
+  # activities_file: configs/my-activities.yaml   # extra [{name, script}] entries
+
+labeler:
+  pid_slack_s: 2
+  fallback: window          # used only when no --root-pid was given: window | skip
+
+features:
+  window_s: 30
+  token_buckets: 256
+  name_buckets: 64
+  exclude_root_process: true
+
+rules:
+  hayabusa_bin: hayabusa
+  # Hayabusa 4.x. For 3.x use:
+  # args: [json-timeline, -d, "{evtx_dir}", -o, "{output}", -L, -p, verbose, -w, -q, -U, --ISO-8601]
+  args: [dfir-timeline, -d, "{evtx_dir}", -o, "{output}", -t, jsonl, -p, verbose, -w, -q, --utc, --iso-8601]
+  min_level: medium
+
+ml:
+  detectors: [iforest, autoencoder]     # add ocsvm if you want it
+  seeds: [1337, 1338, 1339]
+  target_fpr: 0.01
+  benign_split: [0.6, 0.2, 0.2]
+  split_order: chronological
+  ae_backend: auto                      # torch if installed, else numpy
+  hybrid_ml: autoencoder
+
+evaluation:
+  technique_min_rate: 0.5
+  techniques_file: configs/techniques.yaml
