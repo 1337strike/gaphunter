@@ -6,11 +6,14 @@ values with those of your run (`manifest.json`, `eval/metrics.json`).
 ## Experimental setup
 
 All experiments ran in an isolated KVM/libvirt lab on a single laptop ([CPU], 16 GB RAM,
-no GPU). The target was a Windows 11 Enterprise [version/build] virtual machine (UEFI with emulated TPM 2.0, [4-6] GB RAM, 2 vCPU) attached
-to a libvirt network without forwarding, so the guest could reach only the host. The
-guest ran Sysmon [version] with the sysmon-modular configuration (hash [hash]), process
-creation auditing with command lines, and PowerShell script block logging. Before every
-technique execution the VM was reverted to the same running snapshot.
+no GPU). The target was a Windows 11 Enterprise [version/build] virtual machine (UEFI
+with emulated TPM 2.0, [4-6] GB RAM, 2 vCPU) attached to a libvirt network without
+forwarding, so the guest could reach only the host. The guest ran Sysmon [version] with
+the sysmon-modular configuration (release [configs-...], hash [hash]), process creation
+auditing with command lines, and PowerShell script block logging. Microsoft Defender
+real-time protection was disabled so that results reflect Sysmon, Sigma and ML alone.
+Before every technique execution and every baseline slice the VM was reverted to the
+same [offline] snapshot and allowed to settle for [60] s.
 
 Adversary behaviour was emulated with existing Atomic Red Team tests; no new attack code
 was written. Each of the [N] selected tests was executed [3] times. For each execution
@@ -74,11 +77,15 @@ negatives and the malicious windows of all techniques other than t. Models are t
 with [3] random seeds and results are reported as mean and standard deviation.
 
 We report window-level precision, recall, F1 and false-positive rate (on benign test
-windows), ROC-AUC and PR-AUC (macro-averaged over held-out techniques), and detection
+windows), the false-positive rate at the same thresholds on null-control windows and on
+benign windows inside attack sessions (to expose detectors that react to the collection
+procedure rather than the technique), ROC-AUC and PR-AUC (macro-averaged over held-out techniques), and detection
 latency (end of the first flagged malicious window minus the first malicious event). An
 execution counts as detected if at least one of its malicious windows is flagged, and a
 technique as detected if at least [50]% of its executions are. Coverage per ATT&CK tactic
-is the share of detected techniques among those with telemetry. The coverage gap is the
+is the share of detected techniques among those with telemetry. Run detection rates and
+technique coverage are given with percentile bootstrap 95% confidence intervals,
+resampling executions and techniques respectively. The coverage gap is the
 set of techniques missed by the rules; we report how many of them the ML detector
 detects.
 

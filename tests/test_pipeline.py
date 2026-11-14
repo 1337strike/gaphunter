@@ -420,3 +420,49 @@ def test_rule_selection_and_ignored_rules(tmp_path: Path) -> None:
     assert len(parse_alerts(out, "x")) == 2
     assert is_ignored(kept[0], ["proc_creation_win_reg_query_registry"])
     assert is_ignored(kept[0], ["970007B7"]) and not is_ignored(kept[0], [" "])
+
+
+def test_control_windows_are_scored_but_never_trained_on(demo: tuple[RunDir, Config]) -> None:
+    run, cfg = demo
+    windows = pd.read_parquet(run.windows_path)
+    splits = windows.merge(split_windows(windows, cfg.ml, cfg.seed), on="window_id")
+    control = splits[splits["source"] == "control"]
+    assert len(control) > 0 and set(control["split"]) == {"control"}
+    assert not control["label"].any()
+    result = evaluate(run, cfg)
+    metrics = result["detector_metrics"].set_index("detector")
+    assert result["summary"]["n_control_windows"] == len(control)
+    for detector in ("rule", "autoencoder", "ensemble", "hybrid_ensemble"):
+        fpr_c = metrics.at[detector, "fpr_control"]
+        assert 0.0 <= fpr_c <= 1.0
+        lo, hi = (
+            metrics.at[detector, "technique_coverage_ci_lo"],
+            metrics.at[detector, "technique_coverage_ci_hi"],
+        )
+        assert lo <= metrics.at[detector, "technique_coverage"] <= hi
+        assert (
+            metrics.at[detector, "run_detection_rate_ci_lo"]
+            <= metrics.at[detector, "run_detection_rate"]
+        )
+
+
+def test_bootstrap_ci() -> None:
+    from gaphunter.evaluation import bootstrap_ci
+
+    rng = np.random.default_rng(0)
+    lo, hi = bootstrap_ci(np.array([1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0]), rng)
+    assert 0.3 < lo < 0.75 < hi <= 1.0
+    assert bootstrap_ci(np.array([1.0]), rng) == (1.0, 1.0)
+    assert np.isnan(bootstrap_ci(np.array([]), rng)[0])
+
+
+def test_report_shows_control_fpr_and_intervals(
+    demo: tuple[RunDir, Config], tmp_path: Path
+) -> None:
+    run, cfg = demo
+    evaluate(run, cfg)
+    build_report(run, tmp_path / "r")
+    tex = (tmp_path / "r" / "tab_detectors.tex").read_text()
+    assert "FPR$_\\mathrm{ctl}$" in tex and "95\\% CI" in tex and "\\%)" in tex
+    html = (tmp_path / "r" / "report.html").read_text()
+    assert "FPR (control)" in html and "FPR (in-session)" in html

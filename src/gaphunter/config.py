@@ -31,8 +31,10 @@ class LabConfig(_Model):
     snapshot: str = "clean"
     ready_timeout_s: int = Field(default=600, ge=10)
     ready_poll_s: float = Field(default=5.0, gt=0)
-    # Seconds to let the guest settle after it first answers over SSH.
-    settle_s: float = Field(default=15.0, ge=0)
+    # Seconds to let the guest settle after it first answers over SSH. Boot and post-revert
+    # activity (services starting, scheduled maintenance) dies down over the first minute;
+    # baseline slices and attack sessions both start after the same settle time.
+    settle_s: float = Field(default=60.0, ge=0)
 
 
 class SshConfig(_Model):
@@ -76,6 +78,11 @@ class BaselineConfig(_Model):
     """Scripted benign activity used as ML training data."""
 
     slice_minutes: float = Field(default=10.0, gt=0)
+    # With `baseline --revert`: revert (and settle) before every slice, as every attack
+    # session does, so post-revert and post-boot activity is part of "normal". Reverting only
+    # once would leave that activity in attack windows alone, and an anomaly detector could
+    # learn "freshly reverted VM" instead of the technique.
+    revert_each_slice: bool = True
     min_gap_s: float = Field(default=5.0, ge=0)
     max_gap_s: float = Field(default=45.0, ge=0)
     # Optional YAML file with extra activities: [{name: ..., script: ...}, ...]
@@ -231,6 +238,11 @@ class GuideConfig(_Model):
         "Import-Module C:\\AtomicRedTeam\\invoke-atomicredteam\\Invoke-AtomicRedTeam.psd1 "
         "-Force; Invoke-AtomicTest {technique} -TestNumbers {test}; "
         "Invoke-AtomicTest {technique} -TestNumbers {test} -Cleanup; exit"
+    )
+    # Null control: the same shell and module import, a benign command instead of a test.
+    control_command: str = (
+        "Import-Module C:\\AtomicRedTeam\\invoke-atomicredteam\\Invoke-AtomicRedTeam.psd1 "
+        "-Force; Get-Date; Get-ChildItem $env:USERPROFILE | Out-Null; exit"
     )
 
 

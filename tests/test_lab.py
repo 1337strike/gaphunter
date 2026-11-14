@@ -104,7 +104,10 @@ def test_guest_info_parses_key_values() -> None:
 
 def _info_handler(script: str) -> CommandResult:
     if "Win32_OperatingSystem" in script:
-        out = "sysmon_service=Sysmon64\nsysmon_state=Running\nsysmon_version=15.15\n"
+        out = (
+            "sysmon_service=Sysmon64\nsysmon_state=Running\nsysmon_version=15.15\n"
+            "defender_realtime=False\ndefender_tamper_protection=False\n"
+        )
         return CommandResult(0, out, "")
     return CommandResult(0, "", "")
 
@@ -118,9 +121,12 @@ def test_check_lab_all_ok(config: Config) -> None:
         "vm-running",
         "ssh",
         "sysmon",
+        "defender",
         "channels",
     ]
     assert all(r.ok for r in results)
+    defender = next(r for r in results if r.name == "defender")
+    assert defender.detail == "real-time protection off, tamper protection False"
 
 
 def test_check_lab_reports_missing_snapshot_and_nat(config: Config) -> None:
@@ -197,3 +203,12 @@ def test_uefi_snapshot_refusal_is_explained(config: Config) -> None:
     text = str(info.value)
     assert "offline snapshot" in text and "qcow2" in text and "gh-win11" in text
     assert explain_snapshot_error("disk full", "x") == "snapshot failed: disk full"
+
+
+def test_check_lab_warns_when_defender_is_on(config: Config) -> None:
+    remote = FakeRemote(
+        lambda s: CommandResult(0, "sysmon_state=Running\ndefender_realtime=True\n", "")
+    )
+    by_name = {r.name: r for r in check_lab(FakeHypervisor(), remote, config)}
+    assert not by_name["defender"].ok and not by_name["defender"].fatal
+    assert "README" in by_name["defender"].detail

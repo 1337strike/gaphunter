@@ -119,8 +119,6 @@ The VM starts on libvirt's default NAT network so you can install software; it i
 The evaluation runs for 90 days from installation. Finish collecting within that time,
 or rebuild the VM from a fresh ISO.
 
-In an elevated PowerShell inside the guest:
-
 **Host firewall (ufw users).** ufw blocks the VM's address request (DHCP) and its traffic
 out of the default network; the VM then shows a `169.254.x.x` address. Allow both
 networks' address requests, and forwarding only for the temporary default network:
@@ -192,6 +190,27 @@ side by side, and the script stops if the built-in one is enabled.
 Install the adversary-emulation framework you use for the study by following its own
 documentation (the paper uses Atomic Red Team with Invoke-AtomicRedTeam). GapHunter does
 not install or drive it.
+
+**Microsoft Defender**
+
+The study measures Sysmon telemetry, Sigma rules and ML, so Defender's real-time
+protection is switched off in the lab VM. Otherwise it blocks or quarantines tests and
+adds its own events, and results would partly measure Defender. Do this only in the
+isolated VM:
+
+1. In the VM: Windows Security → Virus & threat protection → Manage settings → turn
+   **Tamper Protection** off (Windows only allows this by hand).
+2. From the host:
+
+   ```bash
+   ssh -i ~/.ssh/gaphunter_lab_ed25519 labadmin@VM_IP "reg add \"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection\" /v DisableRealtimeMonitoring /t REG_DWORD /d 1 /f"
+   ssh -i ~/.ssh/gaphunter_lab_ed25519 labadmin@VM_IP "powershell -NoProfile -Command \"Set-MpPreference -DisableRealtimeMonitoring \$true; Add-MpPreference -ExclusionPath C:\AtomicRedTeam\""
+   ```
+
+The policy value keeps real-time protection off across reboots and reverts. GapHunter
+records Defender's state (real-time protection, tamper protection, exclusions) in every
+run manifest, and `lab check` warns when real-time protection is on. If you keep Defender
+on instead, say so in the paper: detection then includes Defender's blocking.
 
 ### 3. Clean snapshot
 
@@ -306,10 +325,17 @@ uv run gaphunter baseline "$RUN" --hours 4 --revert
 ```
 
 Scripted, seeded, ordinary activity (listing processes, editing and archiving files,
-reading settings, Notepad, a harmless scheduled task) is run over SSH and collected in
-10-minute slices named `baseline-0001`, `baseline-0002`, ... Re-running the command
-continues with the first slice that is not on disk. Add your own activities with
-`baseline.activities_file` (a YAML list of `{name, script}`).
+reading settings, starting a desktop program, a harmless scheduled task) is run over SSH
+and collected in 10-minute slices named `baseline-0001`, `baseline-0002`, ... Re-running
+the command continues with the first slice that is not on disk. Add your own activities
+with `baseline.activities_file` (a YAML list of `{name, script}`).
+
+With `--revert`, the VM is reverted and allowed to settle (`lab.settle_s`, 60 s) **before
+every slice**, exactly as before every attack session (`baseline.revert_each_slice`).
+Activity that follows a revert or a boot (services starting, scheduled maintenance) is
+then part of "normal". If the baseline were recorded in one long stretch after a single
+revert, that activity would appear only in attack windows, and an anomaly detector could
+learn to recognise a freshly reverted VM instead of the technique.
 
 ### Analysis
 
@@ -368,6 +394,23 @@ collects the logs, detects the root process and labels the events. Type `r` to r
 repetition or `q` to stop; running the same command again continues where it stopped.
 GapHunter never runs the test itself; the line it shows is `guide.test_command` in the
 config.
+
+### Null-control sessions
+
+Collect a few control sessions alongside the techniques (for example 10 to 15, spread over
+the days you run tests):
+
+```bash
+uv run gaphunter guide "$RUN" --control --reps 10
+```
+
+They follow exactly the same procedure (revert, settle, SSH shell, framework module
+loaded) with a benign command instead of a test (`guide.control_command`). They are never
+used for training. The evaluation reports each detector's false-positive rate on them
+(`fpr_control`) next to the rate on baseline test windows (`fpr`) and on benign windows
+inside attack sessions (`in_session_benign_rate`), all at the same thresholds. If
+`fpr_control` is far above `fpr`, the detector is reacting to the procedure, not the
+technique, and its recall should not be trusted.
 
 ### Resuming after a crash
 
@@ -520,7 +563,14 @@ See `docs/methodology.md` for a write-up you can adapt for the paper.
   and shows up in the `in_session_benign_rate` column.
 - **Framework artefacts.** Events of the root process itself and tokens naming the
   emulation framework are excluded from features; other artefacts of the framework
-  (temporary paths, cleanup commands) may remain.
+  (temporary paths, the framework's own `whoami` calls) may remain. Cleanup commands run
+  from the same shell and are labelled as part of the test.
+- **Collection conditions.** Baseline slices, attack runs and null controls all start
+  from the same snapshot after the same settle time. Null controls measure what remains:
+  compare `fpr_control` with `fpr` before reading recall.
+- **Small samples.** With N techniques and 3 runs each, a technique counts as detected at
+  2 of 3 runs. Technique coverage and run detection rates are reported with bootstrap 95%
+  intervals; read differences between detectors against them.
 - **Rule selection.** The rule detector is Sigma-only and one rule is ignored because it
   fires on the measurement harness (see "Analysis"). Results for "all bundled rules" can be
   produced with `rules.rule_set: all` and `rules --force`.

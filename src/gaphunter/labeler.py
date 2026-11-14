@@ -14,7 +14,12 @@ Everything else is benign. ``label_reason`` records why a row got its label:
 ``window_only``    no root PID was given: every in-window event was labelled (malicious,
                    noisy; only used when ``labeler.fallback`` is ``window``)
 ``control``        GapHunter's own remote-control processes (benign, dropped from features)
+``control_lineage`` a control session's shell lineage (benign; the null-control "test")
 ``None``           benign
+
+Control sessions follow the attack procedure with a benign command. Their root process is
+found and treated exactly like an attack's (``lineage_root``, dropped from features), but
+nothing is labelled malicious.
 """
 
 from __future__ import annotations
@@ -43,7 +48,7 @@ class LabelStats:
     n_malicious: int
     n_control: int
     # "baseline" | "lineage" | "window_only" | "no_lineage_events" | "skipped"
-    mode: str
+    mode: str  # also "control" for null-control sessions
 
 
 def _control_mask(events: pd.DataFrame, control_pids: list[int]) -> pd.Series:
@@ -165,6 +170,12 @@ def label_events(
             fallback=cfg.fallback,
             hint="pass --root-pid to 'session end' for lineage-based labels",
         )
+
+    if session.kind == "control":
+        if mode == "lineage":
+            out.loc[in_window & in_lineage, "label_reason"] = "control_lineage"
+            out.loc[in_window & root_only, "label_reason"] = "lineage_root"
+        return out, stats("control")
 
     if mode == "lineage":
         malicious = in_window & in_lineage

@@ -401,7 +401,7 @@ def robust_scale(benign_scores: FloatArray) -> tuple[float, float]:
 
 
 def split_windows(windows: pd.DataFrame, cfg: MlConfig, seed: int) -> pd.DataFrame:
-    """Assign every window to train / val / test (baseline) or attack (attack sessions).
+    """Assign every window to train / val / test (baseline), attack or control.
 
     Baseline sessions are split as whole units, so windows from one slice never land on
     both sides of a boundary.
@@ -422,7 +422,12 @@ def split_windows(windows: pd.DataFrame, cfg: MlConfig, seed: int) -> pd.DataFra
     assignment = {eid: "train" for eid in order[:n_train]}
     assignment.update({eid: "val" for eid in order[n_train : n_train + n_val]})
     assignment.update({eid: "test" for eid in order[n_train + n_val :]})
-    split = windows["execution_id"].map(assignment).where(windows["source"] == "baseline", "attack")
+    # attack and control windows keep their source as split; only baseline is train/val/test
+    split = (
+        windows["execution_id"]
+        .map(assignment)
+        .where(windows["source"] == "baseline", windows["source"])
+    )
     return pd.DataFrame({"window_id": windows["window_id"], "split": split})
 
 

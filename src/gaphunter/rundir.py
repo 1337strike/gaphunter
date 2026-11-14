@@ -36,7 +36,11 @@ from gaphunter.config import Config, dump_config
 from gaphunter.errors import RunStateError
 from gaphunter.schema import EXECUTIONS_SCHEMA
 
-SessionKind = Literal["attack", "baseline"]
+# attack:   one run of an emulated technique
+# baseline: scripted benign activity (training data)
+# control:  the same procedure as an attack run with a benign command in place of the test,
+#           to check that detectors react to the technique and not to the procedure
+SessionKind = Literal["attack", "baseline", "control"]
 SessionStatus = Literal["open", "ended", "collected"]
 
 _TRACKED_PACKAGES = (
@@ -88,7 +92,11 @@ def make_execution_id(
     repetition: int | None = None,
     name: str | None = None,
 ) -> str:
-    """Deterministic, filesystem-safe id, e.g. ``T1059.001-1-r2`` or ``baseline-morning``."""
+    """Deterministic, filesystem-safe id: ``T1059.001-1-r2``, ``baseline-0001``, ``control-r3``."""
+    if kind == "control":
+        if repetition is None:
+            raise RunStateError("control sessions need a repetition number")
+        return f"control-r{repetition}"
     if kind == "attack":
         if not technique_id or test_number is None or repetition is None:
             raise RunStateError("attack sessions need --technique, --test and --rep")

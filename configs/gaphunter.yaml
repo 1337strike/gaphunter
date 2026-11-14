@@ -8,7 +8,7 @@ lab:
   snapshot: clean           # snapshot reverted to before each session
   ready_timeout_s: 600      # a cold boot of Windows 11 can take a few minutes
   ready_poll_s: 5
-  settle_s: 15              # idle time after SSH first answers
+  settle_s: 60              # idle time after SSH first answers (same for baseline and attacks)
 
 ssh:
   host: 10.66.66.10         # static DHCP lease from lab/gaphunter-isolated.xml
@@ -31,6 +31,7 @@ collector:
 
 baseline:
   slice_minutes: 10
+  revert_each_slice: true   # with --revert: revert before every slice, like attack sessions
   min_gap_s: 5
   max_gap_s: 45
   # activities_file: configs/my-activities.yaml   # extra [{name, script}] entries
@@ -77,3 +78,5 @@ guide:
   # Line shown by `gaphunter guide` for you to paste into the VM's SSH session.
   # GapHunter never runs it itself. {technique} and {test} are filled in.
   test_command: "Import-Module C:\\AtomicRedTeam\\invoke-atomicredteam\\Invoke-AtomicRedTeam.psd1 -Force; Invoke-AtomicTest {technique} -TestNumbers {test}; Invoke-AtomicTest {technique} -TestNumbers {test} -Cleanup; exit"
+  # Null control (`gaphunter guide --control`): same procedure, benign command.
+  control_command: "Import-Module C:\\AtomicRedTeam\\invoke-atomicredteam\\Invoke-AtomicRedTeam.psd1 -Force; Get-Date; Get-ChildItem $env:USERPROFILE | Out-Null; exit"

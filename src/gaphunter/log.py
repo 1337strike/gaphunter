@@ -27,7 +27,9 @@ def configure(*, verbose: bool = False, json_logs: bool = False) -> None:
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        # Look up sys.stderr on every log call rather than once: a stream captured at
+        # configure time can be closed later (for example by a test runner or a redirect).
+        logger_factory=lambda *args: structlog.PrintLogger(file=sys.stderr),
         cache_logger_on_first_use=False,
     )
 

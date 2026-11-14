@@ -35,6 +35,10 @@ _BENIGN_SCRIPTS = (
     "Get-ChildItem C:\\work | Measure-Object",
     "Get-Service | Where-Object Status -eq 'Running'",
 )
+_BENIGN_CONTROL: tuple[tuple[str, str], ...] = (
+    ("C:\\Windows\\System32\\hostname.exe", "hostname"),
+    ("C:\\Windows\\System32\\tasklist.exe", "tasklist"),
+)
 # technique id -> (activity profile, fabricated rule alert level or None)
 PROFILES: dict[str, tuple[str, str | None]] = {
     "T1082": ("loud", "high"),  # anomalous and alerted      -> both
@@ -191,6 +195,7 @@ def make_demo_run(
     repetitions: int = 3,
     slice_seconds: float = 600.0,
     attack_seconds: float = 120.0,
+    n_control: int = 3,
 ) -> RunDir:
     """Create a run directory filled with synthetic sessions, events and rule alerts."""
     run = RunDir.create(config, name=name, synthetic=True)
@@ -253,4 +258,26 @@ def make_demo_run(
                 notes="SYNTHETIC",
             )
             finish(b, session, alerts)
+    # Null-control sessions: the same procedure, a benign command in the analyst's shell.
+    for rep in range(1, n_control + 1):
+        execution_id = f"control-r{rep}"
+        rng = random.Random(f"synth-{config.seed}-{execution_id}")
+        start = attack_t0 + timedelta(seconds=slot * (attack_seconds + 60))
+        slot += 1
+        b = _Builder(execution_id, rng)
+        _benign_activity(b, start, attack_seconds, rate=0.3)
+        root_pid = 9000 + slot
+        root = (root_pid, f"{{{execution_id}-root}}", "C:\\Windows\\System32\\cmd.exe")
+        for i, (image, command) in enumerate(_BENIGN_CONTROL):
+            b.process(start + timedelta(seconds=20 + 5 * i), root, image, command)
+        session = Session(
+            execution_id=execution_id,
+            kind="control",
+            start_utc=start,
+            end_utc=start + timedelta(seconds=attack_seconds),
+            executor_root_pid=root_pid,
+            repetition=rep,
+            notes="SYNTHETIC",
+        )
+        finish(b, session, [])
     return run

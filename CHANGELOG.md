@@ -23,6 +23,16 @@ Added
 - `lab/guest-setup.ps1`: one script for the guest's telemetry (Sysmon with sysmon-modular,
   process-creation auditing with command lines, PowerShell script block logging, log sizes),
   run from the host over SSH.
+- Matched collection conditions, after an external review: `baseline --revert` now reverts
+  and settles before every slice (`baseline.revert_each_slice`), like every attack session,
+  and `lab.settle_s` defaults to 60 s. Otherwise post-revert activity occurred only in
+  attack windows and anomaly detectors could learn "freshly reverted VM".
+- Null-control sessions (`guide --control`): the attack procedure with a benign command.
+  The evaluation reports `fpr_control` and `in_session_benign_rate` beside `fpr`, and the
+  reports show all three.
+- Bootstrap 95% intervals for run detection rate and technique coverage.
+- Defender's state is recorded in the run manifest and checked by `lab check`; README
+  documents how the lab disables it.
 - `gaphunter guide`: walks through every repetition of one test (revert, open the window,
   show the line to paste into the VM, wait for Enter, collect, detect the root, label),
   with redo, stop and resume.

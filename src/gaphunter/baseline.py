@@ -198,8 +198,13 @@ def run_baseline(
     *,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    prepare: Callable[[int], None] | None = None,
 ) -> list[str]:
-    """Collect ``hours`` of baseline as consecutive slices. Returns new execution ids."""
+    """Collect ``hours`` of baseline as consecutive slices. Returns new execution ids.
+
+    ``prepare(index)`` runs before each slice that still has to be collected; the CLI uses
+    it to revert the VM so every slice starts from the same state as an attack session.
+    """
     cfg = config.baseline
     activities = load_activities(cfg)
     n_slices = max(1, round(hours * 60 / cfg.slice_minutes))
@@ -211,6 +216,8 @@ def run_baseline(
             continue  # resume: this slice is already on disk
         if existing is not None:
             run.remove(execution_id)
+        if prepare is not None:
+            prepare(index)
         start, start_pid = guest_utc_now(remote)
         session = Session(
             execution_id=execution_id,

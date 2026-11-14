@@ -457,3 +457,111 @@ def test_cli_guide_walks_through_repetitions(
     third = runner.invoke(cli.app, [*guide[:-1], "4"], input="")
     assert third.exit_code == 130
     assert RunDir.open(run_dir).get("T1082-1-r4") is None
+
+
+def test_defaults_match_attack_and_baseline_conditions() -> None:
+    cfg = Config()
+    assert cfg.lab.settle_s == 60 and cfg.baseline.revert_each_slice
+    loaded = load_config(Path(__file__).parents[1] / "configs" / "gaphunter.yaml")
+    assert loaded.lab.settle_s == 60 and loaded.baseline.revert_each_slice
+    assert make_execution_id("control", repetition=2) == "control-r2"
+    with pytest.raises(RunStateError):
+        make_execution_id("control")
+
+
+def test_baseline_prepares_every_slice(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gaphunter import baseline as baseline_mod
+
+    monkeypatch.setattr(baseline_mod, "collect_session", lambda *a, **k: 5)
+    guest = Guest()
+    remote = FakeRemote(guest.handler)
+    run = RunDir.create(config, name="b", now=T0)
+    prepared: list[int] = []
+    clock = {"t": 0.0}
+
+    def tick() -> float:
+        clock["t"] += 400.0  # each activity "takes" long enough to end a 10-minute slice
+        return clock["t"]
+
+    created = baseline_mod.run_baseline(
+        remote, run, config, 0.5, sleep=lambda s: None, clock=tick, prepare=prepared.append
+    )
+    assert created == ["baseline-0001", "baseline-0002", "baseline-0003"]
+    assert prepared == [1, 2, 3]
+    # resuming does not revert for slices already on disk
+    assert (
+        baseline_mod.run_baseline(
+            remote, run, config, 0.5, sleep=lambda s: None, clock=tick, prepare=prepared.append
+        )
+        == []
+    )
+    assert prepared == [1, 2, 3]
+
+
+def test_cli_guide_control_sessions(
+    cfg_file: Path, records: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from conftest import FakeHypervisor
+
+    from gaphunter.collector import export as export_mod
+    from gaphunter.collector.parse import normalize_records
+
+    key = tmp_path / "key"
+    key.write_text("k")
+    monkeypatch.setenv("GAPHUNTER_SSH_USER", "labadmin")
+    monkeypatch.setenv("GAPHUNTER_SSH_KEY", str(key))
+    guest = Guest()
+    monkeypatch.setattr(cli, "_remote", lambda state: FakeRemote(guest.handler))
+    monkeypatch.setattr(cli, "_hypervisor", lambda state: FakeHypervisor())
+
+    def fake_parse(path: Path, *, execution_id: str) -> list[dict[str, Any]]:
+        if path.stem != "sysmon":
+            return []
+        base = normalize_records(records[:1], execution_id=execution_id)[0]
+        now = guest.now
+        tree = [
+            (
+                700,
+                600,
+                "C:\\Windows\\System32\\OpenSSH\\sshd.exe",
+                "C:\\Windows\\System32\\cmd.exe",
+                'cmd.exe /c "powershell"',
+            ),
+            (
+                701,
+                700,
+                "C:\\Windows\\System32\\cmd.exe",
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "powershell",
+            ),
+            (
+                702,
+                701,
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "C:\\Windows\\System32\\hostname.exe",
+                "hostname",
+            ),
+        ]
+        return [
+            {**base, "record_id": 100 + i, "ts_utc": now - timedelta(seconds=20 - i),
+             "pid": pid, "parent_pid": ppid, "parent_image": parent, "image": image,
+             "command_line": cmd, "process_guid": f"{{p-{pid}}}", "parent_process_guid": f"{{p-{ppid}}}"}
+            for i, (pid, ppid, parent, image, cmd) in enumerate(tree)
+        ]  # fmt: skip
+
+    monkeypatch.setattr(export_mod, "parse_evtx", fake_parse)
+    run_dir = _init(cfg_file)
+    base = ["-c", str(cfg_file), "--env-file", str(tmp_path / "none.env"), "guide", str(run_dir)]
+    both = runner.invoke(cli.app, [*base, "--control", "--technique", "T1082"])
+    assert both.exit_code == 1
+    neither = runner.invoke(cli.app, base)
+    assert neither.exit_code == 1
+    result = runner.invoke(cli.app, [*base, "--control", "--reps", "2"], input="\n\n")
+    assert result.exit_code == 0, result.output
+    assert "null control, repetition 1 of 2" in result.output
+    assert "Get-Date" in result.output and "Invoke-AtomicTest" not in result.output
+    assert "control-r1: 3 events, root PID 701\n" in result.output
+    run = RunDir.open(run_dir)
+    sessions = {s.execution_id: s for s in run.collected()}
+    assert set(sessions) == {"control-r1", "control-r2"}
+    assert all(s.kind == "control" and s.executor_root_pid == 701 for s in sessions.values())

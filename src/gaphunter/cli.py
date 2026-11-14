@@ -243,7 +243,7 @@ def run_status(run_dir: Path) -> None:
 def session_begin(
     ctx: typer.Context,
     run_dir: Path,
-    kind: Annotated[str, typer.Option(help="'attack' or 'baseline'.")] = "attack",
+    kind: Annotated[str, typer.Option(help="'attack', 'baseline' or 'control'.")] = "attack",
     technique: Annotated[
         str | None, typer.Option(help="ATT&CK technique id, e.g. T1059.001.")
     ] = None,
@@ -261,9 +261,11 @@ def session_begin(
     """Open a collection window: optionally revert the VM, then record the start time."""
     state = _state(ctx)
     try:
-        if kind not in ("attack", "baseline"):
-            raise RunStateError("--kind must be 'attack' or 'baseline'")
-        session_kind: SessionKind = "attack" if kind == "attack" else "baseline"
+        if kind not in ("attack", "baseline", "control"):
+            raise RunStateError("--kind must be 'attack', 'baseline' or 'control'")
+        session_kind: SessionKind = (
+            "attack" if kind == "attack" else "control" if kind == "control" else "baseline"
+        )
         run = RunDir.open(run_dir)
         execution_id = make_execution_id(
             session_kind, technique_id=technique, test_number=test, repetition=rep, name=name
@@ -413,7 +415,7 @@ def _close_session(
     )
     run.upsert(ended)  # persisted before collecting, so a failed export can be retried
     done = _collect(state, run, ended, remote)
-    if done.kind == "attack" and done.executor_root_pid is None:
+    if done.kind in ("attack", "control") and done.executor_root_pid is None:
         done = _auto_root(run, done)
     return done
 
@@ -535,9 +537,17 @@ def _ssh_hint(state: AppState) -> str:
 def guide_cmd(
     ctx: typer.Context,
     run_dir: Path,
-    technique: Annotated[str, typer.Option(help="ATT&CK technique id, e.g. T1082.")],
+    technique: Annotated[str | None, typer.Option(help="ATT&CK technique id, e.g. T1082.")] = None,
     test: Annotated[int, typer.Option(help="Atomic test number.")] = 1,
     reps: Annotated[int, typer.Option(min=1, help="Number of repetitions.")] = 3,
+    control: Annotated[
+        bool,
+        typer.Option(
+            "--control",
+            help="Null-control sessions: the same procedure with a benign command "
+            "(guide.control_command) instead of a test.",
+        ),
+    ] = False,
     revert: Annotated[
         bool, typer.Option("--revert/--no-revert", help="Revert to the clean snapshot each time.")
     ] = True,
@@ -546,11 +556,22 @@ def guide_cmd(
 
     Repetitions that are already collected are skipped, so the command can be re-run
     after a stop. GapHunter does not run the test: it shows the line to paste into the VM.
+    With --control it guides null-control sessions instead (control-r1, control-r2, ...).
     """
     from gaphunter.labeler import label_run
 
     state = _state(ctx)
-    command = state.config.guide.test_command.format(technique=technique, test=test)
+    if control and technique:
+        raise _fail(RunStateError("--control sessions have no --technique"))
+    if not control and not technique:
+        raise _fail(RunStateError("--technique is required (or pass --control)"))
+    kind: SessionKind = "control" if control else "attack"
+    title = "null control" if control else f"{technique} test {test}"
+    command = (
+        state.config.guide.control_command
+        if control
+        else state.config.guide.test_command.format(technique=technique, test=test)
+    )
     try:
         run = RunDir.open(run_dir)
         remote = _remote(state)
@@ -558,7 +579,7 @@ def guide_cmd(
         rep = 1
         while rep <= reps:
             execution_id = make_execution_id(
-                "attack", technique_id=technique, test_number=test, repetition=rep
+                kind, technique_id=technique, test_number=test, repetition=rep
             )
             existing = run.get(execution_id)
             if existing is not None and existing.status == "collected":
@@ -579,14 +600,14 @@ def guide_cmd(
             if existing is not None:
                 run.remove(execution_id)  # a window left open by an interrupted guide
 
-            typer.echo(f"\n=== {technique} test {test}, repetition {rep} of {reps} ===")
+            typer.echo(f"\n=== {title}, repetition {rep} of {reps} ===")
             typer.echo("preparing the VM..." if revert else "opening the window...")
             _open_session(
                 state,
                 run,
                 remote,
                 execution_id=execution_id,
-                kind="attack",
+                kind=kind,
                 technique=technique,
                 test=test,
                 test_guid=None,
@@ -620,14 +641,19 @@ def guide_cmd(
                 continue
             done = _close_session(state, run, remote)
             stats = [
-                s for s in label_run(run, state.config.labeler) if s.execution_id == execution_id
+                st for st in label_run(run, state.config.labeler) if st.execution_id == execution_id
             ]
             malicious = stats[0].n_malicious if stats else 0
             typer.echo(
-                f"{execution_id}: {done.n_events} events, root PID {done.executor_root_pid}, "
-                f"{malicious} malicious"
+                f"{execution_id}: {done.n_events} events, root PID {done.executor_root_pid}"
+                + ("" if control else f", {malicious} malicious")
             )
-            if malicious == 0:
+            if control and done.executor_root_pid is None:
+                typer.echo(
+                    "  warning: the control shell was not found; its own events stay in the "
+                    "windows. Check 'gaphunter session processes'."
+                )
+            if not control and malicious == 0:
                 typer.echo(
                     "  warning: nothing was labelled. Check 'gaphunter session processes "
                     f"RUN {execution_id}', or press r next time to redo a repetition."
@@ -635,7 +661,7 @@ def guide_cmd(
             rep += 1
     except GapHunterError as exc:
         raise _fail(exc) from exc
-    typer.echo(f"\n{technique} test {test}: all {reps} repetitions collected")
+    typer.echo(f"\n{title}: all {reps} repetitions collected")
 
 
 # -- analysis pipeline ---------------------------------------------------------------
@@ -647,7 +673,12 @@ def baseline_cmd(
     run_dir: Path,
     hours: Annotated[float, typer.Option(help="Hours of benign activity to collect.")] = 4.0,
     revert: Annotated[
-        bool, typer.Option("--revert/--no-revert", help="Revert to the clean snapshot first.")
+        bool,
+        typer.Option(
+            "--revert/--no-revert",
+            help="Revert to the clean snapshot: before every slice "
+            "(baseline.revert_each_slice, the default) or once at the start.",
+        ),
     ] = False,
 ) -> None:
     """Generate scripted benign activity on the VM and collect it in slices (resumable)."""
@@ -661,15 +692,26 @@ def baseline_cmd(
         if pending:
             raise RunStateError(f"uncollected session(s): {', '.join(pending)}; finish them first")
         remote = _remote(state)
-        if revert:
+
+        def do_revert(index: int = 0) -> None:
             hv = _hypervisor(state)
             try:
                 revert_and_wait(hv, remote, state.config.lab)
             finally:
                 hv.close()
-        if not run.manifest().get("guest"):
+
+        each = revert and state.config.baseline.revert_each_slice
+        if revert and not each:
+            do_revert()
+        if not each and not run.manifest().get("guest"):
             run.update_guest_info(guest_info(remote))
-        created = run_baseline(remote, run, state.config, hours)
+
+        def prepare(index: int) -> None:
+            do_revert(index)
+            if not run.manifest().get("guest"):
+                run.update_guest_info(guest_info(remote))
+
+        created = run_baseline(remote, run, state.config, hours, prepare=prepare if each else None)
     except GapHunterError as exc:
         raise _fail(exc) from exc
     typer.echo(f"collected {len(created)} baseline slice(s)")

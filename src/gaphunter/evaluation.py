@@ -13,6 +13,22 @@ Protocol
   A technique is detected when at least ``evaluation.technique_min_rate`` of its runs are.
 * Runs with no malicious window (nothing of the activity reached the logs) are reported
   as ``no_telemetry`` and left out of detection rates: no log-based detector can see them.
+
+Confound checks
+---------------
+Attack windows are recorded right after a revert, through an SSH shell, with the emulation
+framework loaded. Three false-positive rates are reported side by side, at the same
+thresholds:
+
+* ``fpr``: benign baseline test windows (the headline number);
+* ``fpr_control``: windows of null-control sessions (same procedure, benign command);
+* ``in_session_benign_rate``: benign windows inside attack sessions.
+
+A detector that reacts to the procedure rather than the technique shows ``fpr_control``
+and ``in_session_benign_rate`` far above ``fpr``.
+
+Uncertainty: run-level detection rate and technique coverage come with percentile
+bootstrap 95% intervals (executions resp. techniques resampled with replacement).
 """
 
 from __future__ import annotations
@@ -57,6 +73,7 @@ class Frame:
     in_session_benign: dict[str, IntArray]  # technique -> benign windows of its sessions
     executions: pd.DataFrame  # attack sessions: execution_id, technique_id
     techniques: list[str]
+    control: IntArray = field(default_factory=lambda: np.array([], dtype=np.intp))
 
 
 @dataclass
@@ -68,6 +85,7 @@ class Decision:
     pred_pos: dict[str, BoolArray] = field(default_factory=dict)
     pred_test: dict[str, BoolArray] = field(default_factory=dict)
     pred_in_session: dict[str, BoolArray] = field(default_factory=dict)
+    pred_control: dict[str, BoolArray] = field(default_factory=dict)
     score_pos: dict[str, FloatArray] = field(default_factory=dict)
     score_test: dict[str, FloatArray] = field(default_factory=dict)
     config: dict[str, str] = field(default_factory=dict)
@@ -104,7 +122,8 @@ def build_frame(run: RunDir) -> Frame:
         mine = (session_technique == technique).to_numpy()
         positives[technique] = np.flatnonzero(mine & label)
         in_session[technique] = np.flatnonzero(mine & ~label)
-    return Frame(windows, val, test, positives, in_session, executions, techniques)
+    control = np.flatnonzero(windows["source"].to_numpy() == "control")
+    return Frame(windows, val, test, positives, in_session, executions, techniques, control)
 
 
 def _average_precision(pos: FloatArray, neg: FloatArray) -> float:
@@ -159,6 +178,7 @@ def decide_ml(
         decision.pred_pos[technique] = s[frame.positives[technique]] > tau
         decision.pred_test[technique] = s[frame.test] > tau
         decision.pred_in_session[technique] = s[frame.in_session_benign[technique]] > tau
+        decision.pred_control[technique] = s[frame.control] > tau
     return decision
 
 
@@ -175,6 +195,7 @@ def decide_rule(frame: Frame, rule_scores: pd.DataFrame, min_level: str) -> Deci
         decision.pred_pos[technique] = s[frame.positives[technique]] >= level
         decision.pred_test[technique] = s[frame.test] >= level
         decision.pred_in_session[technique] = s[frame.in_session_benign[technique]] >= level
+        decision.pred_control[technique] = s[frame.control] >= level
     return decision
 
 
@@ -188,6 +209,7 @@ def decide_hybrid(rule: Decision, ml: Decision) -> Decision:
         decision.pred_in_session[technique] = (
             rule.pred_in_session[technique] | ml.pred_in_session[technique]
         )
+        decision.pred_control[technique] = rule.pred_control[technique] | ml.pred_control[technique]
     return decision
 
 
@@ -247,6 +269,12 @@ def window_metrics(frame: Frame, decision: Decision) -> dict[str, float]:
         "roc_auc": float("nan"),
         "pr_auc": float("nan"),
         "in_session_benign_rate": float(in_session.mean()) if len(in_session) else float("nan"),
+        "fpr_control": (
+            float(np.mean([decision.pred_control[t].mean() for t in frame.techniques]))
+            if len(frame.control) and frame.techniques
+            else float("nan")
+        ),
+        "n_control_windows": float(len(frame.control)),
         "n_malicious_windows": float(n_pos),
         "n_benign_test_windows": float(len(frame.test)),
     }
@@ -291,6 +319,21 @@ def _curves(decision: Decision, frame: Frame) -> dict[str, Any] | None:
         "precision": thin(precision),
         "config": modal,
     }
+
+
+def bootstrap_ci(
+    values: np.ndarray[Any, Any], rng: np.random.Generator, n_boot: int = 2000
+) -> tuple[float, float]:
+    """Percentile 95% interval of the mean, resampling ``values`` with replacement."""
+    data = np.asarray(values, dtype=np.float64)
+    data = data[~np.isnan(data)]
+    if len(data) == 0:
+        return float("nan"), float("nan")
+    if len(data) == 1:
+        return float(data[0]), float(data[0])
+    means = rng.choice(data, size=(n_boot, len(data)), replace=True).mean(axis=1)
+    lo, hi = np.quantile(means, [0.025, 0.975])
+    return float(lo), float(hi)
 
 
 def _mean_std(values: list[float]) -> tuple[float, float]:
@@ -416,11 +459,17 @@ def evaluate(run: RunDir, config: Config) -> dict[str, Any]:
             "roc_auc",
             "pr_auc",
             "in_session_benign_rate",
+            "fpr_control",
         ):
             mean, std = _mean_std([m[key] for m in per_seed])
             row[key], row[f"{key}_std"] = mean, std
         mine = with_telemetry[with_telemetry["detector"] == detector]
         row["run_detection_rate"] = float(mine["detected"].mean()) if len(mine) else float("nan")
+        # one value per execution (averaged over seeds), resampled over executions
+        per_execution = mine.groupby("execution_id")["detected"].mean().to_numpy(dtype=float)
+        row["run_detection_rate_ci_lo"], row["run_detection_rate_ci_hi"] = bootstrap_ci(
+            per_execution, np.random.default_rng(config.seed)
+        )
         latencies = mine.loc[mine["detected"], "latency_s"]
         row["median_latency_s"] = float(latencies.median()) if len(latencies) else float("nan")
         n_visible = int((techniques["n_runs_with_telemetry"] > 0).sum())
@@ -428,6 +477,10 @@ def evaluate(run: RunDir, config: Config) -> dict[str, Any]:
         row["techniques_detected"] = n_hit
         row["techniques_with_telemetry"] = n_visible
         row["technique_coverage"] = n_hit / n_visible if n_visible else float("nan")
+        row["technique_coverage_ci_lo"], row["technique_coverage_ci_hi"] = bootstrap_ci(
+            visible[f"{detector}_detected"].to_numpy(dtype=float),
+            np.random.default_rng(config.seed),
+        )
         detector_rows.append(row)
     detector_metrics = pd.DataFrame(detector_rows)
 
@@ -452,6 +505,7 @@ def evaluate(run: RunDir, config: Config) -> dict[str, Any]:
         "n_techniques": len(frame.techniques),
         "n_attack_runs": int(len(frame.executions)),
         "n_runs_without_telemetry": int((~per_run["has_telemetry"]).sum()),
+        "n_control_windows": int(len(frame.control)),
         "selected_configs": {
             f"{d.detector}@{d.seed}": d.config for d in decisions if d.detector != "rule"
         },

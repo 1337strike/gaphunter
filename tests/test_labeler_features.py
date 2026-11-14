@@ -254,3 +254,20 @@ def test_process_tree_and_launch_context_features() -> None:
     assert f["f_cmd_long_count"] == 1
     empty = window_features(frame([ev(1, "sysmon", 3, pid=1)]), FeatureConfig())
     assert empty["f_proc_max_depth"] == 0 and empty["f_proc_max_children"] == 0
+
+
+def test_control_sessions_mark_the_shell_but_label_nothing() -> None:
+    out, stats = label_events(
+        scenario(), session(kind="control", technique_id=None), LabelerConfig()
+    )
+    assert stats.mode == "control" and not out["label"].any()
+    assert out.loc[5, "label_reason"] == "lineage_root"  # the shell itself: dropped from features
+    assert out.loc[1, "label_reason"] == "control_lineage"
+    assert out.loc[6, "label_reason"] is None  # unrelated process
+    windows = session_windows(out, session(kind="control", technique_id=None), FeatureConfig())
+    assert not windows["label"].any() and set(windows["source"]) == {"control"}
+    # the root's own event is excluded exactly as in an attack session
+    attack_windows = session_windows(
+        label_events(scenario(), session(), LabelerConfig())[0], session(), FeatureConfig()
+    )
+    assert windows["n_events"].sum() == attack_windows["n_events"].sum()

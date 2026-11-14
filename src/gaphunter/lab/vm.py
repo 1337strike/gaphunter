@@ -270,6 +270,14 @@ if ($svc) {
 $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\SysmonDrv\Parameters'
 $drv = Get-ItemProperty $key -ErrorAction SilentlyContinue
 if ($drv -and $drv.ConfigHash) { Write-Output ("sysmon_config_hash=" + $drv.ConfigHash) }
+try { $mp = Get-MpComputerStatus -ErrorAction Stop } catch { $mp = $null }
+if ($mp) {
+  Write-Output ("defender_realtime=" + $mp.RealTimeProtectionEnabled)
+  Write-Output ("defender_tamper_protection=" + $mp.IsTamperProtected)
+  Write-Output ("defender_antivirus=" + $mp.AntivirusEnabled)
+} else { Write-Output "defender_realtime=unavailable" }
+try { $ex = (Get-MpPreference -ErrorAction Stop).ExclusionPath } catch { $ex = $null }
+if ($ex) { Write-Output ("defender_exclusions=" + ($ex -join ';')) }
 """
 
 _UTC_NOW_SCRIPT = "Write-Output ([DateTime]::UtcNow.ToString('o') + '|' + $PID)"
@@ -375,6 +383,24 @@ def check_lab(hv: Hypervisor, remote: Remote, config: Config) -> list[CheckResul
             f"{info.get('sysmon_service', 'Sysmon')} {info.get('sysmon_version', '?')} running"
             if sysmon_ok
             else "Sysmon service not running",
+        )
+    )
+
+    realtime = info.get("defender_realtime", "unknown")
+    results.append(
+        CheckResult(
+            "defender",
+            realtime in ("False", "unavailable"),
+            "real-time protection off"
+            + (
+                f", tamper protection {info['defender_tamper_protection']}"
+                if "defender_tamper_protection" in info
+                else ""
+            )
+            if realtime in ("False", "unavailable")
+            else f"real-time protection is {realtime}: Defender may block tests and adds its "
+            "own events (see README, Microsoft Defender)",
+            fatal=False,
         )
     )
 

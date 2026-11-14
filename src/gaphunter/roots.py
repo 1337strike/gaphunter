@@ -73,7 +73,7 @@ def set_root(run: RunDir, execution_id: str, root_pid: int) -> Session:
     session = run.get(execution_id)
     if session is None:
         raise RunStateError(f"no such session: {execution_id}")
-    if session.kind != "attack":
+    if session.kind == "baseline":
         raise RunStateError(f"{execution_id} is a baseline session; it has no root process")
     updated = session.model_copy(update={"executor_root_pid": root_pid})
     run.upsert(updated)

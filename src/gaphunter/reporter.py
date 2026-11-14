@@ -447,6 +447,22 @@ def _table(columns: str, header: list[str], rows: list[list[str]], caption: str,
     return "\n".join(lines)
 
 
+def _get(row: pd.Series, key: str) -> float:
+    """A metric from a detector row; NaN for columns that older evaluations lack."""
+    return float(row[key]) if key in row.index else float("nan")
+
+
+def coverage_ci(row: pd.Series, *, latex: bool = False) -> str:
+    """ "5/8 (31-88%)": techniques detected plus the bootstrap 95% interval."""
+    covered = f"{int(row['techniques_detected'])}/{int(row['techniques_with_telemetry'])}"
+    lo, hi = _get(row, "technique_coverage_ci_lo"), _get(row, "technique_coverage_ci_hi")
+    if lo != lo or hi != hi:
+        return covered
+    dash = "--" if latex else "\u2013"
+    pct = "\\%" if latex else "%"
+    return f"{covered} ({100 * lo:.0f}{dash}{100 * hi:.0f}{pct})"
+
+
 def latex_tables(data: dict[str, Any]) -> dict[str, str]:
     summary = data["summary"]
     synthetic = bool(summary.get("synthetic"))
@@ -460,16 +476,20 @@ def latex_tables(data: dict[str, Any]) -> dict[str, str]:
             tex_escape(detector_name(str(row["detector"]))),
             _mean_std(row, "precision", multi), _mean_std(row, "recall", multi),
             _mean_std(row, "f1", multi), _mean_std(row, "fpr", multi),
+            _num(_get(row, "fpr_control")),
             _mean_std(row, "roc_auc", multi), _mean_std(row, "pr_auc", multi),
-            f"{int(row['techniques_detected'])}/{int(row['techniques_with_telemetry'])}",
+            coverage_ci(row, latex=True),
             _num(float(row["median_latency_s"]), 1),
         ])  # fmt: skip
     tables["tab_detectors.tex"] = _table(
-        "lrrrrrrrr",
-        ["Detector", "Prec.", "Recall", "F1", "FPR", "ROC-AUC", "PR-AUC", "Techn.", "Lat. (s)"],
+        "lrrrrrrrrr",
+        ["Detector", "Prec.", "Recall", "F1", "FPR", "FPR$_\\mathrm{ctl}$", "ROC-AUC",
+         "PR-AUC", "Techn. (95\\% CI)", "Lat. (s)"],
         rows,
         f"Window-level detection performance (ML thresholds set at {fpr_pct}\\% FPR on benign "
-        "validation windows; mean$\\pm$std over seeds) and technique coverage.",
+        "validation windows; mean$\\pm$std over seeds), false-positive rate on null-control "
+        "sessions (FPR$_\\mathrm{ctl}$), and technique coverage with bootstrap 95\\% "
+        "intervals.",
         "tab:detectors", synthetic, star=True,
     )  # fmt: skip
 
@@ -621,21 +641,29 @@ def html_report(data: dict[str, Any], figures: dict[str, str], manifest: dict[st
     parts.append('<h2>Detectors</h2><div class="scroll"><table><thead><tr>')
     parts += [
         f"<th>{h}</th>"
-        for h in ("Detector", "Precision", "Recall", "F1", "FPR", "ROC-AUC", "PR-AUC",
-                  "Techniques", "Median latency (s)")
+        for h in ("Detector", "Precision", "Recall", "F1", "FPR (baseline)", "FPR (control)",
+                  "FPR (in-session)", "ROC-AUC", "PR-AUC", "Techniques (95% CI)",
+                  "Median latency (s)")
     ]  # fmt: skip
     parts.append("</tr></thead><tbody>")
     for _, row in data["detectors"].iterrows():
-        covered = f"{int(row['techniques_detected'])}/{int(row['techniques_with_telemetry'])}"
         cells = [
-            _cell(float(row[k])) for k in ("precision", "recall", "f1", "fpr", "roc_auc", "pr_auc")
-        ]
+            _cell(_get(row, k))
+            for k in ("precision", "recall", "f1", "fpr", "fpr_control", "in_session_benign_rate",
+                      "roc_auc", "pr_auc")
+        ]  # fmt: skip
         parts.append(
             f"<tr><td>{escape(detector_name(str(row['detector'])))}</td>"
             + "".join(f"<td>{c}</td>" for c in cells)
-            + f"<td>{covered}</td><td>{_cell(float(row['median_latency_s']), 1)}</td></tr>"
+            + f"<td>{escape(coverage_ci(row))}</td>"
+            + f"<td>{_cell(float(row['median_latency_s']), 1)}</td></tr>"
         )
     parts.append("</tbody></table></div>")
+    parts.append(
+        '<p class="lead" style="margin-top:8px">FPR (control) and FPR (in-session) use the '
+        "same thresholds as FPR (baseline). If they are much higher, the detector is reacting "
+        "to the collection procedure rather than to the techniques.</p>"
+    )
 
     if figures:
         parts.append('<h2>Figures</h2><div class="figs">')
@@ -706,13 +734,17 @@ def summary_markdown(data: dict[str, Any], written: list[str]) -> str:
         lines.append(f"- Outcome per technique: {counts}")
     lines += [
         "",
-        "| Detector | Precision | Recall | F1 | FPR | Techniques |",
-        "|---|---|---|---|---|---|",
+        "| Detector | Precision | Recall | F1 | FPR | FPR control | FPR in-session | Techniques (95% CI) |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for _, row in data["detectors"].iterrows():
-        cells = [_num(float(row[k])) for k in ("precision", "recall", "f1", "fpr")]
-        covered = f"{int(row['techniques_detected'])}/{int(row['techniques_with_telemetry'])}"
-        lines.append(f"| {detector_name(str(row['detector']))} | {' | '.join(cells)} | {covered} |")
+        cells = [
+            _num(_get(row, k))
+            for k in ("precision", "recall", "f1", "fpr", "fpr_control", "in_session_benign_rate")
+        ]
+        lines.append(
+            f"| {detector_name(str(row['detector']))} | {' | '.join(cells)} | {coverage_ci(row)} |"
+        )
     lines += ["", "## Files", "", *[f"- `{name}`" for name in written], ""]
     return "\n".join(lines)
 
