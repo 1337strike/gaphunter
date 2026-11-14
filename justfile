@@ -70,9 +70,22 @@ docker:
 accept branch:
     #!/usr/bin/env bash
     set -euo pipefail
+    git fetch -q --prune origin
+    if ! git rev-parse -q --verify "origin/{{branch}}" >/dev/null; then
+        echo "no branch 'origin/{{branch}}'. Branches waiting to be accepted:" >&2
+        git branch -r --list 'origin/claude/*' | sed 's|^ *origin/|  |' >&2
+        exit 1
+    fi
     stashed=0
     if ! git diff --quiet; then git stash push -q -m just-accept; stashed=1; fi
-    git fetch -q origin
+    # Whatever happens below, put back your local changes and return to main.
+    restore() {
+        git rebase --abort >/dev/null 2>&1 || true
+        git checkout -q main >/dev/null 2>&1 || true
+        git branch -q -D _accept >/dev/null 2>&1 || true
+        if [ "$stashed" = 1 ]; then git stash pop -q || echo "your changes are in 'git stash list'" >&2; fi
+    }
+    trap restore EXIT
     git checkout -q main
     git pull -q --ff-only
     git checkout -q -B _accept "origin/{{branch}}"
@@ -80,7 +93,10 @@ accept branch:
     git checkout -q main
     git merge -q --ff-only _accept
     git push -q origin main
-    git branch -q -D _accept
     git push -q origin --delete "{{branch}}"
-    if [ "$stashed" = 1 ]; then git stash pop -q; fi
-    git log --oneline --show-signature -3 2>/dev/null | grep -v '^$' || git log --oneline -3
+    echo "landed on main (check GitHub for the Verified badge):"
+    git log --oneline -3
+
+# Branches pushed by Claude that are waiting for `just accept`
+pending:
+    @git fetch -q --prune origin && git branch -r --list 'origin/claude/*' | sed 's|^ *origin/||'
