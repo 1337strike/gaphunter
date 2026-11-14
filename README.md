@@ -93,10 +93,28 @@ virt-install -n gh-win11 --memory 6144 --vcpus 2 \
   --graphics spice --connect qemu:///system
 ```
 
-In Windows setup choose "Sign-in options" then "Domain join instead" to create a local
-account (for example `labadmin`). The VM starts on libvirt's default NAT network so you
-can install software; it is moved to `gaphunter-isolated` before the snapshot. 6 GB makes
-the installation bearable; 4 GB (`virsh setmaxmem` / `setmem`) is enough afterwards.
+Installation tips:
+
+- **"Press any key to boot from CD or DVD" times out** before your keypress reaches the
+  window (the window must have keyboard focus). Let the host press it instead:
+
+  ```bash
+  virsh -c qemu:///system reset gh-win11
+  for i in $(seq 1 30); do virsh -c qemu:///system send-key gh-win11 KEY_SPACE; sleep 0.3; done
+  ```
+
+- **The mouse is stuck inside the VM window:** press left Ctrl + left Alt to release it.
+- **Local account:** if setup shows "Let's connect you to a network", choose
+  "I don't have internet"; it then offers a local account directly. With a network, choose
+  "Sign-in options" then "Domain join instead". Name the account, for example, `labadmin`.
+- **"network 'default' is not active":** `virsh -c qemu:///system net-start default` and
+  `net-autostart default`.
+- **ISO "may not be accessible by the hypervisor":** move it out of your home folder, for
+  example to `/var/lib/libvirt/images/`.
+
+The VM starts on libvirt's default NAT network so you can install software; it is moved to
+`gaphunter-isolated` before the snapshot. 6 GB makes the installation bearable; 4 GB
+(`virsh setmaxmem` / `setmem`) is enough afterwards.
 
 The evaluation runs for 90 days from installation. Finish collecting within that time,
 or rebuild the VM from a fresh ISO.
