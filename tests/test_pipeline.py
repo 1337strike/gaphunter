@@ -265,7 +265,16 @@ def test_bundle_roundtrip_detects_and_explains(
     explanation = alert["explanation"]
     assert explanation["top_features"] and all("what" in f for f in explanation["top_features"])
     assert "synth-tool" in explanation["rarest_commands"][0]["text"]
-    assert any(p["image"].startswith("synth-") for p in explanation["programs_started"])
+    started = {p["image"]: p["count"] for p in explanation["programs_started"]}
+    assert any(image.startswith("synth-") for image in started)
+    # each process start is logged by Sysmon and by Security; it must be counted once
+    window = pd.Timestamp(alert["window_start"])
+    chunk = _events(run, "T1082-1-r1")
+    chunk = chunk[
+        (chunk["ts_utc"] >= window) & (chunk["ts_utc"] < window + pd.Timedelta(seconds=30))
+    ]
+    sysmon_starts = chunk[(chunk["channel"] == "sysmon") & (chunk["event_id"] == 1)]
+    assert sum(started.values()) <= len(sysmon_starts)
     text = render_alert(alert)
     assert "score" in text and "synth-tool" in text
 

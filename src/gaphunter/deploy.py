@@ -386,7 +386,10 @@ def explain_window(
         if name in members:
             item["examples"] = [text for text, _ in members[name].most_common(5)]
         top.append(item)
-    creates = events[events["event_id"].isin([1, 4688])] if not events.empty else events
+    # Sysmon 1 and Security 4688 both record a process start: count each start once.
+    creates = events[(events["channel"] == "sysmon") & (events["event_id"] == 1)]
+    if creates.empty:
+        creates = events[(events["channel"] == "security") & (events["event_id"] == 4688)]
     programs = Counter(basename(v) for v in creates["image"] if isinstance(v, str))
     return {
         "top_features": top,
