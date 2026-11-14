@@ -45,8 +45,13 @@ leakage.
 
 ## Detectors
 
-*Rule-based.* Hayabusa [version] with its Sigma rule set is run on the exported logs. A
-window is flagged when it contains an alert of level [medium] or higher.
+*Rule-based.* Hayabusa [version] is run on the exported logs with only its bundled Sigma
+rules loaded. Hayabusa's native rules are excluded because several of them alert on any
+Sysmon event carrying a rule annotation, which sysmon-modular derives from ATT&CK
+techniques; including them would measure the Sysmon configuration rather than Sigma.
+One Sigma rule (programs launched by sshd) is ignored because it fires on the remote
+control channel used in every benign and attack session. A window is flagged when it
+contains an alert of level [medium] or higher.
 
 *ML-based.* Isolation Forest, a small fully connected autoencoder (d-64-b-64-d,
 b in {8, 16}) and a rarity score (the sum of the k most surprising hashed command-line

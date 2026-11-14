@@ -137,6 +137,19 @@ class RuleConfig(_Model):
     # A window counts as detected when it holds an alert at or above this level.
     min_level: Literal["informational", "low", "medium", "high", "critical"] = "medium"
     timeout_s: int = Field(default=600, ge=1)
+    # Which of Hayabusa's bundled rules to load:
+    #   sigma: only the Sigma rules (rules/sigma). The study compares Sigma with ML, and
+    #          Hayabusa's own "Sysmon Alert" rules fire on any event the Sysmon config has
+    #          annotated (sysmon-modular annotates ATT&CK techniques), which would turn the
+    #          Sysmon configuration itself into the detector.
+    #   all:   Hayabusa's default rule set (Sigma plus Hayabusa's own rules).
+    rule_set: Literal["sigma", "all"] = "sigma"
+    # Rules whose alerts are discarded, by rule ID, title or file name. The default is the
+    # Sigma rule for programs started by sshd, which fires on GapHunter's own control
+    # channel (and the analyst's SSH session) in every baseline and attack session.
+    ignore_rules: list[str] = Field(
+        default_factory=lambda: ["Program Executed Using Proxy/Local Command Via SSH.EXE"]
+    )
 
 
 class MlConfig(_Model):

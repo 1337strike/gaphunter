@@ -373,8 +373,50 @@ def test_import_baseline_and_group_rule_alerts(demo: tuple[RunDir, Config], tmp_
         out.write_text(json.dumps(hit) + "\n" if "_imports" in " ".join(argv) else "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
+    (tmp_path / "rules" / "sigma").mkdir(parents=True)  # layout of the release zip
     rules = cfg.rules.model_copy(update={"hayabusa_bin": str(evtx)})  # any existing file
     alerts = run_rules(run, rules, runner=fake_hayabusa)
     assert alerts["execution_id"].tolist() == [second.execution_id]
-    assert sum("_imports" in " ".join(c) for c in calls) == 1
+    scans = [c for c in calls if "_imports" in " ".join(c)]
+    assert len(scans) == 1
+    # only the Sigma rules are loaded
+    assert scans[0][-2:] == ["-r", str((tmp_path / "rules" / "sigma").resolve())]
+    assert run.manifest()["tool_versions"]["hayabusa_rules"] == "sigma only"
     assert run.manifest()["tool_versions"]["hayabusa"] == "Hayabusa v9.9.9 - Test Release"
+
+
+def test_rule_selection_and_ignored_rules(tmp_path: Path) -> None:
+    from gaphunter.config import RuleConfig
+    from gaphunter.detectors.rule import hayabusa_argv, is_ignored, parse_alerts
+    from gaphunter.errors import GapHunterError
+
+    binary = tmp_path / "hayabusa"
+    binary.write_text("")
+    cfg = RuleConfig(hayabusa_bin=str(binary))
+    with pytest.raises(GapHunterError, match="Sigma rules not found"):
+        hayabusa_argv(cfg, tmp_path / "evtx", tmp_path / "out.jsonl")
+    (tmp_path / "rules" / "sigma").mkdir(parents=True)
+    argv = hayabusa_argv(cfg, tmp_path / "evtx", tmp_path / "out.jsonl")
+    assert argv[-2] == "-r" and argv[-1].endswith("rules/sigma")
+    every = hayabusa_argv(
+        cfg.model_copy(update={"rule_set": "all"}), tmp_path / "e", tmp_path / "o"
+    )
+    assert "-r" not in every
+    custom = cfg.model_copy(update={"args": [*cfg.args, "-r", "/my/rules"]})
+    assert hayabusa_argv(custom, tmp_path / "e", tmp_path / "o").count("-r") == 1
+
+    out = tmp_path / "alerts.jsonl"
+    lines = [
+        {"Timestamp": "2026-11-14T12:50:25Z", "Level": "med", "Channel": "Sysmon",
+         "RuleTitle": "Program Executed Using Proxy/Local Command Via SSH.EXE",
+         "RuleFile": "proc_creation_win_ssh_proxy_execution.yml", "RuleID": "6d83e159"},
+        {"Timestamp": "2026-11-14T12:51:11Z", "Level": "med", "Channel": "Sysmon",
+         "RuleTitle": "Potential Configuration And Service Reconnaissance Via Reg.EXE",
+         "RuleFile": "proc_creation_win_reg_query_registry.yml", "RuleID": "970007b7"},
+    ]  # fmt: skip
+    out.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    kept = parse_alerts(out, "x", cfg.ignore_rules)
+    assert [a["rule_id"] for a in kept] == ["970007b7"]
+    assert len(parse_alerts(out, "x")) == 2
+    assert is_ignored(kept[0], ["proc_creation_win_reg_query_registry"])
+    assert is_ignored(kept[0], ["970007B7"]) and not is_ignored(kept[0], [" "])

@@ -39,6 +39,12 @@ Changed
 - Feature set changed, so `windows.parquet` and scores from 0.1 must be rebuilt
   (`gaphunter features`, `gaphunter train`).
 
+- The rule detector loads only Hayabusa's Sigma rules by default (`rules.rule_set`), and
+  `rules.ignore_rules` drops rules by ID, title or file; the default ignores the sshd rule
+  that fires on GapHunter's control channel. On real Hayabusa 4.4.0 output, 557 of 661
+  alerts came from Hayabusa's native rules, most of them "(Sysmon Alert)" rules keyed on
+  the Sysmon configuration's own annotations.
+
 Fixed
 - Hayabusa has no `--version` flag; its version is now read from the banner of `hayabusa help`
   (checked against the real 4.4.0 binary).

@@ -128,6 +128,7 @@ def normalize_alert(record: dict[str, Any], execution_id: str) -> dict[str, Any]
         "ts_utc": ts,
         "rule_title": _get(record, "RuleTitle", "message"),
         "rule_file": _get(record, "RuleFile"),
+        "rule_id": _get(record, "RuleID"),
         "level": level,
         "level_num": LEVELS.get(level or "", 0),
         "channel": _channel(record),
@@ -161,16 +162,50 @@ def read_alert_file(path: Path) -> Iterable[dict[str, Any]]:
     return list(csv.DictReader(text.splitlines()))
 
 
-def parse_alerts(path: Path, execution_id: str) -> list[dict[str, Any]]:
+def is_ignored(alert: dict[str, Any], ignore: Iterable[str]) -> bool:
+    """True if the alert's rule ID, title or file name is on the ignore list."""
+    wanted = {i.strip().lower() for i in ignore if i.strip()}
+    if not wanted:
+        return False
+    keys = {
+        str(alert.get("rule_id") or "").lower(),
+        str(alert.get("rule_title") or "").lower(),
+        str(alert.get("rule_file") or "").lower(),
+        Path(str(alert.get("rule_file") or "")).stem.lower(),
+    }
+    return bool(keys & wanted)
+
+
+def parse_alerts(path: Path, execution_id: str, ignore: Iterable[str] = ()) -> list[dict[str, Any]]:
+    ignore = list(ignore)
     alerts = (normalize_alert(r, execution_id) for r in read_alert_file(path))
-    return [a for a in alerts if a is not None]
+    return [a for a in alerts if a is not None and not is_ignored(a, ignore)]
+
+
+def hayabusa_home(cfg: RuleConfig) -> Path:
+    """Directory holding the Hayabusa binary and its bundled ``rules`` folder."""
+    found = shutil.which(cfg.hayabusa_bin)
+    return Path(found or cfg.hayabusa_bin).expanduser().resolve().parent
+
+
+def sigma_rules_dir(cfg: RuleConfig) -> Path:
+    path = hayabusa_home(cfg) / "rules" / "sigma"
+    if not path.is_dir():
+        raise GapHunterError(
+            f"Sigma rules not found at {path}. Keep the Hayabusa binary next to the 'rules' "
+            "folder from its release zip, or set rules.rule_set to 'all'."
+        )
+    return path
 
 
 def hayabusa_argv(cfg: RuleConfig, evtx_dir: Path, output: Path) -> list[str]:
-    return [
+    argv = [
         cfg.hayabusa_bin,
         *(a.format(evtx_dir=str(evtx_dir), output=str(output)) for a in cfg.args),
     ]
+    if cfg.rule_set == "sigma" and not ({"-r", "--rules"} & set(cfg.args)):
+        argv += ["-r", str(sigma_rules_dir(cfg))]
+    return argv
 
 
 def hayabusa_version(cfg: RuleConfig, runner: Runner = subprocess.run) -> str:
@@ -239,6 +274,10 @@ def run_rules(
     if todo or todo_groups:
         require_hayabusa(cfg)
         run.record_tool_version("hayabusa", hayabusa_version(cfg, runner))
+        run.record_tool_version(
+            "hayabusa_rules",
+            "sigma only" if cfg.rule_set == "sigma" else "all bundled rules",
+        )
     for session in todo:
         _invoke(
             cfg,
@@ -262,7 +301,7 @@ def run_rules(
     for session in own:
         path = run.alerts_raw_path(session.execution_id)
         if path.exists():
-            rows.extend(parse_alerts(path, session.execution_id))
+            rows.extend(parse_alerts(path, session.execution_id, cfg.ignore_rules))
     for group in groups:
         path = run.import_alerts_path(group)
         if not path.exists():
@@ -275,7 +314,7 @@ def run_rules(
             key=lambda s: s.start_utc,
             reverse=True,
         )
-        for alert in parse_alerts(path, group):
+        for alert in parse_alerts(path, group, cfg.ignore_rules):
             for session in members:
                 if session.end_utc is not None and (
                     session.start_utc <= alert["ts_utc"] <= session.end_utc
@@ -303,7 +342,7 @@ def detect_rule_alerts(
     alerts: list[dict[str, Any]] = []
     for record in read_alert_file(output):
         alert = normalize_alert(record, "detect")
-        if alert is None or alert["level_num"] < minimum:
+        if alert is None or alert["level_num"] < minimum or is_ignored(alert, cfg.ignore_rules):
             continue
         alerts.append(
             {

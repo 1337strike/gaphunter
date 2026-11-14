@@ -51,6 +51,9 @@ rules:
   # args: [json-timeline, -d, "{evtx_dir}", -o, "{output}", -L, -p, verbose, -w, -q, -U, --ISO-8601]
   args: [dfir-timeline, -d, "{evtx_dir}", -o, "{output}", -t, jsonl, -p, verbose, -w, -q, --utc, --iso-8601]
   min_level: medium
+  rule_set: sigma            # sigma = only Sigma rules; all = also Hayabusa's own rules
+  ignore_rules:              # fires on GapHunter's SSH control channel in every session
+    - "Program Executed Using Proxy/Local Command Via SSH.EXE"
 
 ml:
   detectors: [iforest, autoencoder, rarity]   # add ocsvm if you want it

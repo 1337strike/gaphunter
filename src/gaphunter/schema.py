@@ -77,6 +77,7 @@ ALERTS_SCHEMA = pa.schema(
         pa.field("ts_utc", _TS, nullable=False),
         pa.field("rule_title", pa.string()),
         pa.field("rule_file", pa.string()),
+        pa.field("rule_id", pa.string()),
         pa.field("level", pa.string()),
         pa.field("level_num", pa.int32(), nullable=False),
         pa.field("channel", pa.string()),

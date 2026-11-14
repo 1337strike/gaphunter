@@ -324,6 +324,13 @@ Point `rules.hayabusa_bin` in `configs/gaphunter.yaml` at `~/tools/hayabusa/haya
 arguments are for Hayabusa 4.x; the 3.x form is in a comment in the config. The Hayabusa
 version is recorded in the run manifest.
 
+Only Hayabusa's bundled **Sigma** rules are loaded (`rules.rule_set: sigma`). Hayabusa's own
+"(Sysmon Alert)" rules fire on every event that the Sysmon configuration has annotated, and
+sysmon-modular annotates events with ATT&CK techniques, so including them would make the
+Sysmon config itself the detector. `rules.ignore_rules` drops the Sigma rule for programs
+started by sshd, which fires on GapHunter's SSH control channel in every session. Both
+choices are in the saved config of each run; report them with the results.
+
 ```bash
 uv run gaphunter label "$RUN"
 uv run gaphunter features "$RUN"
@@ -495,6 +502,9 @@ See `docs/methodology.md` for a write-up you can adapt for the paper.
 - **Framework artefacts.** Events of the root process itself and tokens naming the
   emulation framework are excluded from features; other artefacts of the framework
   (temporary paths, cleanup commands) may remain.
+- **Rule selection.** The rule detector is Sigma-only and one rule is ignored because it
+  fires on the measurement harness (see "Analysis"). Results for "all bundled rules" can be
+  produced with `rules.rule_set: all` and `rules --force`.
 - **Rule attribution.** A rule alert anywhere in a malicious window counts as a
   detection even if the rule is not about that technique; `technique_match` in
   `rule_scores.parquet` gives the stricter view.
