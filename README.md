@@ -282,10 +282,11 @@ uv run gaphunter run status "$RUN"
 Start and end times are read from the **guest clock**, because event timestamps come from
 it and it jumps back on every snapshot revert.
 
-Run the test from an SSH session opened **after** `session begin`
-(`ssh -i <key> labadmin@10.66.66.10 powershell`). `session end` then finds the root process
-by itself: the interactive shell that SSH started and that started other processes. It
-prints `root PID ... detected`. You can still pass `--root-pid` (in PowerShell, `$PID`)
+Run the test from a fresh SSH session (`ssh -i <key> labadmin@10.66.66.10 powershell`),
+one per session. `session end` then finds the root process by itself: the interactive
+shell that SSH started and that started other processes, or, if the shell was opened a
+moment before the window, the only PowerShell outside the window whose children ran
+inside it. It prints `root PID ... detected`. You can still pass `--root-pid` (in PowerShell, `$PID`)
 to set it explicitly. If neither works, labels fall back to "everything inside the
 window", which is much noisier.
 

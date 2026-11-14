@@ -137,10 +137,33 @@ def detect_root(starts: list[ProcessStart]) -> RootGuess:
     if len(pids) == 1:
         shell = active[0]
         return RootGuess(pids[0], f"{shell.image} started over SSH at {shell.ts:%H:%M:%S}", pids)
-    if not pids:
+    if pids:
+        return RootGuess(None, f"{len(pids)} interactive SSH shells started processes", pids)
+
+    # The shell may have been opened just before the window (for example while
+    # 'session begin' was still waiting for the VM to settle): its own creation is then
+    # not in the logs, only its children. Accept a PowerShell parent that started inside
+    # the window's processes but was not itself started in the window, if it is the only one.
+    started_here = set(by_pid)
+    outside = sorted(
+        {
+            p.parent_pid
+            for p in starts
+            if p.parent_pid is not None
+            and not p.control
+            and p.parent_pid not in started_here
+            and p.parent_image in {"powershell.exe", "pwsh.exe"}
+        }
+    )
+    if len(outside) == 1:
+        first = next(p for p in starts if p.parent_pid == outside[0])
         return RootGuess(
-            None,
-            "no interactive SSH shell that started processes was found in the window "
-            "(was the SSH session opened before 'session begin'?)",
+            outside[0],
+            f"PowerShell opened before the window, first child at {first.ts:%H:%M:%S}",
+            tuple(outside),
         )
-    return RootGuess(None, f"{len(pids)} interactive SSH shells started processes", pids)
+    if outside:
+        return RootGuess(
+            None, f"{len(outside)} PowerShell processes from before the window", tuple(outside)
+        )
+    return RootGuess(None, "no interactive shell that started processes was found in the window")

@@ -47,9 +47,39 @@ def test_shell_started_directly_by_sshd() -> None:
 
 def test_harness_commands_alone_give_no_root() -> None:
     harness = [p for p in PILOT if p.pid in (1820, 1756, 4128)]
-    harness.append(ps("12:51:50", 1757, 1756, "powershell.exe", "conhost.exe", "conhost.exe"))
+    harness.append(
+        ps("12:51:50", 1757, 1756, "powershell.exe", "conhost.exe", "conhost.exe", control=True)
+    )
     guess = detect_root(harness)
-    assert guess.pid is None and "no interactive SSH shell" in guess.reason
+    assert guess.pid is None and "no interactive shell" in guess.reason
+
+
+# Second real run: the SSH session was opened while 'session begin' was still waiting,
+# so the shell (PID 4720) started a few seconds before the window.
+EARLY_SHELL = [
+    ps("17:10:25", 3948, 4720, "powershell.exe", "whoami.exe", '"C:\\WINDOWS\\system32\\whoami.exe"'),
+    ps("17:10:27", 4764, 4720, "powershell.exe", "cmd.exe", '"cmd.exe" /c systeminfo & reg query X'),
+    ps("17:10:27", 4500, 4764, "cmd.exe", "systeminfo.exe", "systeminfo"),
+    ps("17:10:27", 4372, 948, "", "wmiprvse.exe", "wmiprvse.exe -secured -Embedding"),
+    ps("17:10:31", 4896, 4764, "cmd.exe", "reg.exe", "reg query X"),
+    ps("17:10:33", 4880, 4720, "powershell.exe", "whoami.exe", '"C:\\WINDOWS\\system32\\whoami.exe"'),
+    ps("17:10:33", 4884, 4720, "powershell.exe", "cmd.exe", '"cmd.exe" /c'),
+    ps("17:10:46", 1300, 1352, "sshd.exe", "cmd.exe",
+       '"c:\\windows\\system32\\cmd.exe" /c "powershell.exe -NoLogo -NoProfile -NonInteractive -Command -"'),
+    ps("17:10:46", 1684, 1300, "cmd.exe", "powershell.exe",
+       "powershell.exe  -NoLogo -NoProfile -NonInteractive -Command -", control=True),
+]  # fmt: skip
+
+
+def test_shell_opened_just_before_the_window() -> None:
+    guess = detect_root(EARLY_SHELL)
+    assert guess.pid == 4720 and "before the window" in guess.reason
+
+
+def test_two_shells_from_before_the_window_are_ambiguous() -> None:
+    other = ps("17:10:40", 5000, 4721, "powershell.exe", "hostname.exe", "hostname")
+    guess = detect_root([*EARLY_SHELL, other])
+    assert guess.pid is None and set(guess.candidates) == {4720, 4721}
 
 
 def test_idle_shell_is_not_a_root() -> None:
