@@ -373,8 +373,9 @@ def explain_window(
     for name, weight in ranked:
         if len(top) >= cfg.top_features or weight <= 0:
             break
-        if values.get(name, 0.0) == 0 and name not in benign:
-            continue  # an absent word bucket cannot be a reason
+        value = float(values.get(name, 0.0))
+        if value == 0 and benign.get(name, 0.0) < 1.0:
+            continue  # the absence of something that is rare anyway is not a reason
         item: dict[str, Any] = {
             "feature": name,
             "what": describe_feature(name),
@@ -419,14 +420,26 @@ def read_evtx_files(paths: list[Path], execution_id: str = "detect") -> pd.DataF
 
 
 def detect_events(
-    events: pd.DataFrame, bundle: ModelBundle, cfg: DetectConfig, *, explain: bool = True
+    events: pd.DataFrame,
+    bundle: ModelBundle,
+    cfg: DetectConfig,
+    *,
+    explain: bool = True,
+    same_host: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Score events and return ``(alerts, summary)``. One alert per window over threshold."""
+    """Score events and return ``(alerts, summary)``. One alert per window over threshold.
+
+    Events are windowed per host name. ``same_host`` treats every event as one machine
+    (for a host that was renamed and therefore logs under two names).
+    """
     features = bundle.features()
     width = pd.Timedelta(seconds=features.window_s)
     alerts: list[dict[str, Any]] = []
     n_windows = 0
     hosts = events["host"].fillna("unknown") if not events.empty else pd.Series(dtype=object)
+    if same_host and not events.empty:
+        names = sorted(set(hosts))
+        hosts = pd.Series("+".join(names), index=events.index)
     for host, part in events.groupby(hosts, sort=True):
         start = part["ts_utc"].min().floor(f"{int(features.window_s)}s")
         end = part["ts_utc"].max()

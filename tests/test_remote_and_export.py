@@ -40,6 +40,10 @@ def test_wrap_powershell_traps_errors_and_ends_with_blank_line() -> None:
     assert wrapped.startswith("$ErrorActionPreference = 'Stop'")
     assert "try {\nWrite-Output 1\n} catch {" in wrapped
     assert wrapped.endswith("exit 0\n\n\n")
+    # an empty line inside the body would end the try block early when read from stdin
+    multi = wrap_powershell("\n$a = 1\n\n   \nWrite-Output $a\n")
+    body = multi[: multi.index("} catch {")]
+    assert "\n\n" not in body and "$a = 1\nWrite-Output $a\n" in body
 
 
 def test_ssh_sends_script_on_stdin_and_never_prompts(tmp_path: Path) -> None:

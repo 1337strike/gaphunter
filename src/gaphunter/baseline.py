@@ -1,7 +1,7 @@
 """Scripted benign activity: the training data for the anomaly detectors.
 
 The baseline is ordinary administration and desktop-style work (listing processes,
-editing and archiving files, reading settings, starting and closing Notepad, creating and
+editing and archiving files, reading settings, starting and closing a desktop program, creating and
 removing a harmless scheduled task). It runs over the same SSH + PowerShell channel as
 every other GapHunter command, so that the remote-control channel itself is part of
 "normal" and cannot be what the detectors learn to flag.
@@ -95,12 +95,15 @@ BUILTIN_ACTIVITIES: tuple[Activity, ...] = (
     ),
     Activity(
         "file-hash",
-        "Get-FileHash 'C:\\Windows\\System32\\notepad.exe' -Algorithm SHA256 | Out-String",
+        "Get-FileHash 'C:\\Windows\\System32\\cmd.exe' -Algorithm SHA256 | Out-String",
     ),
+    # A classic Win32 program: Notepad and Paint are Store apps on Windows 11 and do not
+    # start reliably from a non-interactive SSH session.
     Activity(
-        "notepad-session",
-        "$p = Start-Process notepad.exe -PassThru; Start-Sleep -Seconds 6; "
-        "Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue",
+        "desktop-app-session",
+        "$p = Start-Process charmap.exe -PassThru -ErrorAction SilentlyContinue\n"
+        "Start-Sleep -Seconds 6\n"
+        "if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }",
     ),
     Activity(
         "cmd-dir",

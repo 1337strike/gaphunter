@@ -3,6 +3,7 @@
 Lab and collection commands::
 
     gaphunter lab check                      pre-flight checks
+    gaphunter lab snapshot                   take the clean snapshot (isolated VMs only)
     gaphunter lab revert                     revert the VM to the clean snapshot
     gaphunter run init [--name N]            create a run directory (prints its path)
     gaphunter run status RUN                 list sessions and their state
@@ -147,6 +148,33 @@ def lab_check(ctx: typer.Context) -> None:
         failed = failed or (not result.ok and result.fatal)
     if failed:
         raise typer.Exit(code=1)
+
+
+@lab_app.command("snapshot")
+def lab_snapshot(
+    ctx: typer.Context,
+    replace: Annotated[
+        bool, typer.Option(help="Delete an existing snapshot of the same name first.")
+    ] = False,
+) -> None:
+    """Take the clean snapshot (refuses if the VM's network is not isolated)."""
+    from gaphunter.lab import take_snapshot
+
+    state = _state(ctx)
+    try:
+        hv = _hypervisor(state)
+        try:
+            kind = take_snapshot(hv, state.config.lab, replace=replace)
+        finally:
+            hv.close()
+    except GapHunterError as exc:
+        raise _fail(exc) from exc
+    note = (
+        "reverts take seconds"
+        if kind == "live"
+        else "the VM was off, so GapHunter boots it after every revert"
+    )
+    typer.echo(f"snapshot {state.config.lab.snapshot!r} created ({kind}: {note})")
 
 
 @lab_app.command("revert")
@@ -568,6 +596,9 @@ def import_evtx_cmd(
     ] = None,
     start: Annotated[str | None, typer.Option(help="Window start, ISO-8601 UTC (attack).")] = None,
     end: Annotated[str | None, typer.Option(help="Window end, ISO-8601 UTC (attack).")] = None,
+    same_host: Annotated[
+        bool, typer.Option(help="The files are one machine that logged under several names.")
+    ] = False,
 ) -> None:
     """Import your own .evtx exports as baseline (training data) or as an attack session."""
     from gaphunter.deploy import read_evtx_files
@@ -587,6 +618,7 @@ def import_evtx_cmd(
                 name=name,
                 slice_minutes=state.config.baseline.slice_minutes,
                 evtx_files=evtx,
+                same_host=same_host,
             )
             typer.echo(f"imported {len(events)} events as {len(created)} baseline session(s)")
         elif kind == "attack":
@@ -606,6 +638,7 @@ def import_evtx_cmd(
                 start=window[0],
                 end=window[1],
                 evtx_files=evtx,
+                same_host=same_host,
             )
             typer.echo(f"imported {len(events)} events as {execution_id}")
         else:
@@ -656,6 +689,9 @@ def detect_cmd(
     fail_on_alert: Annotated[
         bool, typer.Option(help="Exit with code 2 when anything is detected.")
     ] = False,
+    same_host: Annotated[
+        bool, typer.Option(help="Treat all events as one machine (it was renamed).")
+    ] = False,
 ) -> None:
     """Score new logs with a saved model (and optionally Sigma rules) and print alerts."""
     import json
@@ -668,7 +704,9 @@ def detect_cmd(
     try:
         bundle = load_bundle(model)
         events = read_evtx_files(evtx)
-        alerts, summary = detect_events(events, bundle, state.config.detect, explain=explain)
+        alerts, summary = detect_events(
+            events, bundle, state.config.detect, explain=explain, same_host=same_host
+        )
         if rules:
             with tempfile.TemporaryDirectory(prefix="gaphunter-") as tmp:
                 rule_alerts = detect_rule_alerts(evtx, state.config.rules, Path(tmp))

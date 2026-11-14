@@ -27,9 +27,9 @@ class _Model(BaseModel):
 
 class LabConfig(_Model):
     libvirt_uri: str = "qemu:///system"
-    domain: str = "gh-win10"
+    domain: str = "gh-win11"
     snapshot: str = "clean"
-    ready_timeout_s: int = Field(default=300, ge=10)
+    ready_timeout_s: int = Field(default=600, ge=10)
     ready_poll_s: float = Field(default=5.0, gt=0)
     # Seconds to let the guest settle after it first answers over SSH.
     settle_s: float = Field(default=15.0, ge=0)

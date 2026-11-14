@@ -6,7 +6,7 @@ values with those of your run (`manifest.json`, `eval/metrics.json`).
 ## Experimental setup
 
 All experiments ran in an isolated KVM/libvirt lab on a single laptop ([CPU], 16 GB RAM,
-no GPU). The target was a Windows 10 [build] virtual machine (4 GB RAM, 2 vCPU) attached
+no GPU). The target was a Windows 11 Enterprise [version/build] virtual machine (UEFI with emulated TPM 2.0, [4-6] GB RAM, 2 vCPU) attached
 to a libvirt network without forwarding, so the guest could reach only the host. The
 guest ran Sysmon [version] with the sysmon-modular configuration (hash [hash]), process
 creation auditing with command lines, and PowerShell script block logging. Before every

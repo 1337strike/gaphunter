@@ -50,7 +50,7 @@ report formats before the lab is ready.
 Host (developed for Arch Linux, 16 GB RAM, no GPU):
 
 ```bash
-sudo pacman -S libvirt qemu-desktop virt-manager dnsmasq openssh just uv
+sudo pacman -S libvirt qemu-desktop virt-manager dnsmasq openssh just uv swtpm edk2-ovmf
 sudo systemctl enable --now libvirtd
 sudo usermod -aG libvirt "$USER"    # log out and back in
 ```
@@ -75,14 +75,31 @@ just net-up
 virsh -c qemu:///system net-list --all
 ```
 
-Edit the `<host mac=...>` line to your VM's MAC (`virsh domiflist gh-win10`) so it always
+Edit the `<host mac=...>` line to your VM's MAC (`virsh domiflist gh-win11`) so it always
 receives `10.66.66.10`.
 
-### 2. Windows 10 VM
+### 2. Windows 11 VM
 
-Create a Windows 10 evaluation VM named `gh-win10` (4 GB RAM, 2 vCPU, qcow2 disk). During
-the build you can attach it to libvirt's default NAT network to install software; move it
-to `gaphunter-isolated` before taking the snapshot.
+Download the free 90-day **Windows 11 Enterprise evaluation** ISO (x64) from the Microsoft
+Evaluation Center. Windows 11 needs UEFI firmware, a TPM and at least 64 GB of disk;
+`--os-variant win11` makes virt-install add the firmware and an emulated TPM (`swtpm`).
+
+```bash
+virsh -c qemu:///system net-start default
+virt-install -n gh-win11 --memory 6144 --vcpus 2 \
+  --disk size=70,format=qcow2,bus=sata \
+  --cdrom ~/Downloads/<the-iso-you-downloaded>.iso \
+  --os-variant win11 --network network=default \
+  --graphics spice --connect qemu:///system
+```
+
+In Windows setup choose "Sign-in options" then "Domain join instead" to create a local
+account (for example `labadmin`). The VM starts on libvirt's default NAT network so you
+can install software; it is moved to `gaphunter-isolated` before the snapshot. 6 GB makes
+the installation bearable; 4 GB (`virsh setmaxmem` / `setmem`) is enough afterwards.
+
+The evaluation runs for 90 days from installation. Finish collecting within that time,
+or rebuild the VM from a fresh ISO.
 
 In an elevated PowerShell inside the guest:
 
@@ -136,17 +153,49 @@ not install or drive it.
 
 ### 3. Clean snapshot
 
-Switch the VM's NIC to `gaphunter-isolated`, reboot, confirm SSH works from the host, let
-the guest idle for a few minutes, then snapshot it **while running** so reverts take
-seconds instead of a full boot:
+Switch the VM's NIC to the isolated network, reboot, confirm SSH works from the host and
+let the guest idle for a few minutes:
 
 ```bash
-virsh -c qemu:///system snapshot-create-as gh-win10 clean "GapHunter clean state"
-virsh -c qemu:///system snapshot-list gh-win10
+virt-xml gh-win11 --edit --network network=gaphunter-isolated -c qemu:///system
 ```
 
-If libvirt refuses an internal snapshot because of UEFI firmware, use a recent libvirt or
-build the VM with BIOS firmware.
+Then let GapHunter take the snapshot. It refuses if the VM is not isolated:
+
+```bash
+uv run gaphunter lab snapshot            # add --replace to recreate it later
+```
+
+#### UEFI and snapshots
+
+A snapshot of the **running** VM makes every revert take seconds. For a UEFI guest
+(every Windows 11 VM) libvirt only allows that when the firmware's NVRAM file is in
+qcow2 format, and says so if it is not. Two ways forward:
+
+1. **Offline snapshot (simplest).** Shut the VM down and snapshot it while off. GapHunter
+   notices and boots the VM after every revert, which costs a minute or two per test.
+
+   ```bash
+   virsh -c qemu:///system shutdown gh-win11
+   uv run gaphunter lab snapshot
+   ```
+
+2. **Live snapshot (faster).** Convert the NVRAM to qcow2 once, with the VM shut down.
+   This needs libvirt 11.0 or newer and has not been tested by the authors.
+
+   ```bash
+   sudo qemu-img convert -f raw -O qcow2 \
+     /var/lib/libvirt/qemu/nvram/gh-win11_VARS.fd \
+     /var/lib/libvirt/qemu/nvram/gh-win11_VARS.qcow2
+   virsh -c qemu:///system edit gh-win11
+   #   inside <os>, replace the <nvram ...> element with:
+   #   <nvram format='qcow2'>/var/lib/libvirt/qemu/nvram/gh-win11_VARS.qcow2</nvram>
+   virsh -c qemu:///system start gh-win11
+   uv run gaphunter lab snapshot
+   ```
+
+`gaphunter lab check` reports which kind you have (`snapshot-kind`). The emulated TPM's
+state is not part of a snapshot; that does not matter for these experiments.
 
 ### 4. Configure GapHunter
 
@@ -161,6 +210,7 @@ Expected output:
 ```
 [ok  ] snapshot    'clean' found
 [ok  ] isolation   no forwarding network
+[ok  ] snapshot-kind live (reverts take seconds)
 [ok  ] vm-running  running
 [ok  ] ssh         PowerShell over SSH works
 [ok  ] sysmon      Sysmon64 15.x running
@@ -259,6 +309,7 @@ RUN=$(uv run gaphunter run init --name fleet)
 #    Export them on that machine, for example:
 #    wevtutil epl Microsoft-Windows-Sysmon/Operational sysmon.evtx
 uv run gaphunter import-evtx "$RUN" pc01/sysmon.evtx pc01/security.evtx pc01/powershell.evtx --name pc01
+#    (add --same-host if the machine was renamed and its logs carry two host names)
 
 # 2. Features and a deployable model
 uv run gaphunter label "$RUN"
