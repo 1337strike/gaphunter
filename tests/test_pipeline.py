@@ -284,6 +284,16 @@ def test_bundle_roundtrip_detects_and_explains(
     plain, _ = detect_events(_events(run, "T1082-1-r1"), bundle, cfg.detect, explain=False)
     assert "explanation" not in plain[0]
 
+    # one machine that logged under two names: windows must not be split per name
+    renamed = _events(run, "T1082-1-r1").reset_index(drop=True)
+    renamed.loc[: len(renamed) // 2, "host"] = "WIN-OLDNAME"
+    _, split = detect_events(renamed, bundle, cfg.detect, explain=False)
+    merged_alerts, merged = detect_events(
+        renamed, bundle, cfg.detect, explain=False, same_host=True
+    )
+    assert split["hosts"] == 2 and merged["windows"] == summary["windows"]
+    assert {a["host"] for a in merged_alerts} == {"SYNTH-HOST+WIN-OLDNAME"}
+
 
 def test_load_bundle_rejects_other_files(tmp_path: Path) -> None:
     import joblib
@@ -323,10 +333,14 @@ def test_import_baseline_and_group_rule_alerts(demo: tuple[RunDir, Config], tmp_
     assert (run.import_evtx_dir("pc_01") / "sysmon.evtx").is_file()
     with pytest.raises(GapHunterError, match="already exists"):
         import_baseline(run, events, name="pc 01", slice_minutes=5)
-    mixed = events.copy()
-    mixed.loc[mixed.index[:3], "host"] = "OTHER"
-    with pytest.raises(GapHunterError, match="each host separately"):
+    mixed = events.reset_index(drop=True)
+    mixed.loc[:2, "host"] = "WIN-OLDNAME"  # the machine was renamed after setup
+    with pytest.raises(GapHunterError, match="--same-host"):
         import_baseline(run, mixed, name="mixed", slice_minutes=5)
+    renamed = import_baseline(run, mixed, name="renamed", slice_minutes=5, same_host=True)
+    assert len(renamed) == len(created)
+    for execution_id in renamed:
+        run.remove(execution_id)
 
     execution_id = import_attack(
         run, _events(source, "T1082-1-r1"), technique="T1082", test=1, rep=1, root_pid=9001

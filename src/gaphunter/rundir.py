@@ -272,8 +272,13 @@ class RunDir:
         return [s for s in self.sessions() if s.status != "collected"]
 
     def upsert(self, session: Session) -> None:
-        sessions = [s for s in self.sessions() if s.execution_id != session.execution_id]
-        sessions.append(session)
+        self.upsert_many([session])
+
+    def upsert_many(self, new_sessions: list[Session]) -> None:
+        """Add or replace several sessions with a single write of the state files."""
+        replaced = {s.execution_id for s in new_sessions}
+        sessions = [s for s in self.sessions() if s.execution_id not in replaced]
+        sessions.extend(new_sessions)
         sessions.sort(key=lambda s: s.start_utc)
         self._save(sessions)
 

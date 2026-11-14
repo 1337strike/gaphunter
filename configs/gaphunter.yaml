@@ -4,9 +4,9 @@ results_dir: results
 
 lab:
   libvirt_uri: qemu:///system
-  domain: gh-win10          # libvirt domain name of the Windows 10 VM
+  domain: gh-win11          # libvirt domain name of the Windows 11 VM
   snapshot: clean           # snapshot reverted to before each session
-  ready_timeout_s: 300
+  ready_timeout_s: 600      # a cold boot of Windows 11 can take a few minutes
   ready_poll_s: 5
   settle_s: 15              # idle time after SSH first answers
 

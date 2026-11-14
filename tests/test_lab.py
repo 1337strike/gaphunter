@@ -114,6 +114,7 @@ def test_check_lab_all_ok(config: Config) -> None:
     assert [r.name for r in results] == [
         "snapshot",
         "isolation",
+        "snapshot-kind",
         "vm-running",
         "ssh",
         "sysmon",
@@ -144,3 +145,55 @@ def test_check_lab_flags_stopped_sysmon(config: Config) -> None:
     remote = FakeRemote(lambda s: CommandResult(0, "sysmon_state=Stopped\n", ""))
     by_name = {r.name: r for r in check_lab(FakeHypervisor(), remote, config)}
     assert not by_name["sysmon"].ok
+
+
+# -- taking the clean snapshot -------------------------------------------------------
+
+
+def test_take_snapshot_live_and_offline(config: Config) -> None:
+    from gaphunter.lab.vm import take_snapshot
+
+    live = FakeHypervisor(snapshots=[])
+    assert take_snapshot(live, config.lab) == "live"
+    assert live.calls == ["snapshot:clean"]
+
+    offline = FakeHypervisor(snapshots=[], running=False)
+    assert take_snapshot(offline, config.lab) == "offline"
+    by_name = {r.name: r for r in check_lab(offline, FakeRemote(), config)}
+    assert by_name["snapshot-kind"].ok and "offline" in by_name["snapshot-kind"].detail
+
+
+def test_take_snapshot_refuses_a_vm_that_is_not_isolated(config: Config) -> None:
+    from gaphunter.lab.vm import take_snapshot
+
+    hv = FakeHypervisor(
+        snapshots=[], dom_xml=domain_xml(net_iface("default")), networks={"default": NAT_NET}
+    )
+    with pytest.raises(LabError, match="not isolated"):
+        take_snapshot(hv, config.lab)
+    assert hv.calls == []
+
+
+def test_take_snapshot_replace(config: Config) -> None:
+    from gaphunter.lab.vm import take_snapshot
+
+    hv = FakeHypervisor()
+    with pytest.raises(LabError, match="already exists"):
+        take_snapshot(hv, config.lab)
+    take_snapshot(hv, config.lab, replace=True)
+    assert hv.calls == ["delete:clean", "snapshot:clean"]
+
+
+def test_uefi_snapshot_refusal_is_explained(config: Config) -> None:
+    from gaphunter.lab.vm import explain_snapshot_error, take_snapshot
+
+    hv = FakeHypervisor(snapshots=[])
+    hv.snapshot_error = (
+        "Operation not supported: internal snapshots of a VM with pflash based firmware "
+        "require QCOW2 nvram format"
+    )
+    with pytest.raises(LabError) as info:
+        take_snapshot(hv, config.lab)
+    text = str(info.value)
+    assert "offline snapshot" in text and "qcow2" in text and "gh-win11" in text
+    assert explain_snapshot_error("disk full", "x") == "snapshot failed: disk full"

@@ -17,7 +17,17 @@ Added
   script hosts, very long command lines).
 - Self-contained `report.html`, Dockerfile, GitHub Actions CI, PyPI metadata.
 
+- `gaphunter lab snapshot`: takes the clean snapshot, refuses a VM that is not isolated,
+  and explains libvirt's UEFI/NVRAM refusal. `lab check` reports whether the snapshot is
+  live or offline.
+- `--same-host` for `import-evtx` and `detect`, for a machine that logged under two names
+  (Windows setup names it WIN-XXXX before it is renamed).
+
 Changed
+- The lab target is now Windows 11 Enterprise (the Windows 10 evaluation is no longer
+  offered). Default domain name is `gh-win11`; `lab.ready_timeout_s` defaults to 600.
+- Baseline activities no longer depend on Notepad, a Store app on Windows 11 that does not
+  start reliably from a non-interactive session.
 - License is now Apache-2.0 (was MIT).
 - Default detectors are Isolation Forest, autoencoder and rarity; the headline hybrid is
   rules OR ensemble (`ml.hybrid_ml`). Set `ml.hybrid_ml: autoencoder` for the 0.1 behaviour.

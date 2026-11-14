@@ -3,7 +3,7 @@
   There is deliberately no <forward> element: guests can reach the host bridge address
   and each other, and nothing else. `gaphunter lab check` fails if one is added.
 
-  Replace the MAC below with your VM's (virsh domiflist gh-win10) so it always gets
+  Replace the MAC below with your VM's (virsh domiflist gh-win11) so it always gets
   10.66.66.10, the address in configs/gaphunter.yaml.
 -->
 <network>
@@ -12,7 +12,7 @@
   <ip address="10.66.66.1" netmask="255.255.255.0">
     <dhcp>
       <range start="10.66.66.10" end="10.66.66.50"/>
-      <host mac="52:54:00:66:66:10" name="gh-win10" ip="10.66.66.10"/>
+      <host mac="52:54:00:66:66:10" name="gh-win11" ip="10.66.66.10"/>
     </dhcp>
   </ip>
 </network>

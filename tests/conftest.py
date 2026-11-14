@@ -98,6 +98,8 @@ class FakeHypervisor:
         self.dom_xml = dom_xml or domain_xml(net_iface("gaphunter-isolated"))
         self.networks = networks or {"gaphunter-isolated": ISOLATED_NET, "default": NAT_NET}
         self.calls: list[str] = []
+        self.snapshot_live = running
+        self.snapshot_error: str | None = None
 
     def snapshot_names(self) -> list[str]:
         return list(self.snapshots)
@@ -118,6 +120,31 @@ class FakeHypervisor:
 
     def network_xml(self, name: str) -> str:
         return self.networks[name]
+
+    def snapshot_xml(self, name: str) -> str:
+        if self.snapshot_live:
+            return (
+                f"<domainsnapshot><name>{name}</name><state>running</state>"
+                "<memory snapshot='internal'/></domainsnapshot>"
+            )
+        return (
+            f"<domainsnapshot><name>{name}</name><state>shutoff</state>"
+            "<memory snapshot='no'/></domainsnapshot>"
+        )
+
+    def create_snapshot(self, name: str, description: str) -> None:
+        self.calls.append(f"snapshot:{name}")
+        if self.snapshot_error:
+            from gaphunter.errors import LabError
+            from gaphunter.lab.vm import explain_snapshot_error
+
+            raise LabError(explain_snapshot_error(self.snapshot_error, "gh-win11"))
+        self.snapshot_live = self.running
+        self.snapshots.append(name)
+
+    def delete_snapshot(self, name: str) -> None:
+        self.calls.append(f"delete:{name}")
+        self.snapshots.remove(name)
 
     def close(self) -> None:
         self.calls.append("close")
