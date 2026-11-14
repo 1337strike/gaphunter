@@ -61,6 +61,25 @@ class Preprocessor:
         self._idf = np.log((1.0 + n_docs) / (1.0 + doc_freq)) + 1.0  # smoothed IDF
         return self
 
+    @property
+    def output_columns(self) -> list[str]:
+        """Column names of ``transform`` output (numeric block, then token block)."""
+        return [self.columns[i] for i in self._num] + [self.columns[i] for i in self._tok]
+
+    def benign_mean(self) -> dict[str, float]:
+        """Typical benign value per numeric feature, back in raw units."""
+        if self._mean is None:
+            raise GapHunterError("preprocessor used before fit")
+        return {
+            self.columns[i]: float(np.expm1(m)) for i, m in zip(self._num, self._mean, strict=True)
+        }
+
+    def idf(self) -> dict[str, float]:
+        """IDF weight per token bucket (higher = rarer in benign data)."""
+        if self._idf is None:
+            raise GapHunterError("preprocessor used before fit")
+        return {self.columns[i]: float(v) for i, v in zip(self._tok, self._idf, strict=True)}
+
     def transform(self, x: FloatArray) -> FloatArray:
         if self._mean is None or self._scale is None or self._idf is None:
             raise GapHunterError("preprocessor used before fit")
@@ -114,6 +133,42 @@ class OneClassSvmDetector:
 
     def score(self, x: FloatArray) -> FloatArray:
         return np.asarray(-self._model.decision_function(x), dtype=np.float64)
+
+
+class RarityDetector:
+    """How surprising are the strings in this window, given the benign baseline?
+
+    Works on the raw hashed buckets (command-line tokens, image names, parent>child
+    pairs). Each bucket gets a surprise ``-log((df + 1) / (n + 2))`` from the share of
+    benign training windows it occurs in; a window's score is the sum of its ``top_k``
+    most surprising buckets. Cheap, has no random state, and catches "never seen here
+    before", which tree- and reconstruction-based models can miss.
+    """
+
+    uses_raw = True
+
+    def __init__(self, params: dict[str, Any], columns: list[str]) -> None:
+        self._top_k = int(params.get("top_k", 10))
+        prefixes = ("f_tok_", "f_img_", "f_pair_")
+        self._idx = [i for i, c in enumerate(columns) if c.startswith(prefixes)]
+        self._surprise: FloatArray | None = None
+
+    def fit(self, x: FloatArray) -> None:
+        present = x[:, self._idx] > 0
+        n = present.shape[0]
+        self._surprise = -np.log((present.sum(axis=0) + 1.0) / (n + 2.0))
+
+    def surprise(self, x: FloatArray) -> FloatArray:
+        """Per-bucket surprise for each row (zero where the bucket is absent)."""
+        if self._surprise is None:
+            raise GapHunterError("rarity detector used before fit")
+        return np.asarray((x[:, self._idx] > 0) * self._surprise, dtype=np.float64)
+
+    def score(self, x: FloatArray) -> FloatArray:
+        values = self.surprise(x)
+        k = min(self._top_k, values.shape[1])
+        top = np.partition(values, values.shape[1] - k, axis=1)[:, -k:]
+        return np.asarray(top.sum(axis=1), dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -201,8 +256,12 @@ class NumpyAutoencoder:
         if best_state is not None:
             self._w, self._b = best_state
 
+    def feature_errors(self, x: FloatArray) -> FloatArray:
+        """Squared reconstruction error per feature (which inputs the model failed on)."""
+        return np.asarray((self._forward(x)[1] - x) ** 2, dtype=np.float64)
+
     def score(self, x: FloatArray) -> FloatArray:
-        return np.asarray(np.mean((self._forward(x)[1] - x) ** 2, axis=1), dtype=np.float64)
+        return np.asarray(self.feature_errors(x).mean(axis=1), dtype=np.float64)
 
 
 class TorchAutoencoder:
@@ -260,13 +319,16 @@ class TorchAutoencoder:
         model.eval()
         self._model = model
 
-    def score(self, x: FloatArray) -> FloatArray:
+    def feature_errors(self, x: FloatArray) -> FloatArray:
         import torch
 
         with torch.no_grad():
             data = torch.tensor(x, dtype=torch.float32)
-            err = ((self._model(data) - data) ** 2).mean(dim=1)
+            err = (self._model(data) - data) ** 2
         return np.asarray(err.numpy(), dtype=np.float64)
+
+    def score(self, x: FloatArray) -> FloatArray:
+        return np.asarray(self.feature_errors(x).mean(axis=1), dtype=np.float64)
 
 
 def torch_available() -> bool:
@@ -290,13 +352,18 @@ def grid_for(cfg: MlConfig, detector: str) -> list[dict[str, Any]]:
         "iforest": cfg.iforest_grid,
         "autoencoder": cfg.autoencoder_grid,
         "ocsvm": cfg.ocsvm_grid,
+        "rarity": cfg.rarity_grid,
     }[detector]
     if not grid:
         raise GapHunterError(f"empty hyper-parameter grid for {detector}")
     return grid
 
 
-def make_detector(cfg: MlConfig, detector: str, params: dict[str, Any], seed: int) -> Detector:
+def make_detector(
+    cfg: MlConfig, detector: str, params: dict[str, Any], seed: int, columns: list[str]
+) -> Detector:
+    if detector == "rarity":
+        return RarityDetector(params, columns)
     if detector == "iforest":
         return IsolationForestDetector(params, seed)
     if detector == "ocsvm":
@@ -314,6 +381,20 @@ def make_detector(cfg: MlConfig, detector: str, params: dict[str, Any], seed: in
             return TorchAutoencoder(settings, seed)
         return NumpyAutoencoder(settings, seed)
     raise GapHunterError(f"unknown detector {detector!r}")
+
+
+def uses_raw(model: object) -> bool:
+    """True for detectors that read the raw features instead of the preprocessed ones."""
+    return bool(getattr(model, "uses_raw", False))
+
+
+def robust_scale(benign_scores: FloatArray) -> tuple[float, float]:
+    """Median and inter-quartile range of benign scores, for putting detectors on one scale."""
+    q25, q50, q75 = np.quantile(benign_scores, [0.25, 0.5, 0.75])
+    spread = float(q75 - q25)
+    if spread <= 1e-12:
+        spread = float(np.std(benign_scores)) or 1.0
+    return float(q50), spread
 
 
 # -- splits --------------------------------------------------------------------------
@@ -367,13 +448,17 @@ def train(run: RunDir, cfg: MlConfig, split_seed: int) -> pd.DataFrame:
     z_train = z_all[train_mask]
 
     frames: list[pd.DataFrame] = []
+    first_config: dict[tuple[str, int], FloatArray] = {}
     for detector in cfg.detectors:
         for index, params in enumerate(grid_for(cfg, detector)):
             config_id = f"{detector}#{index}"
             for seed in cfg.seeds:
-                model = make_detector(cfg, detector, params, seed)
-                model.fit(z_train)
-                scores = model.score(z_all)
+                model = make_detector(cfg, detector, params, seed, columns)
+                raw = uses_raw(model)
+                model.fit(x_all[train_mask] if raw else z_train)
+                scores = model.score(x_all if raw else z_all)
+                if index == 0:
+                    first_config[(detector, seed)] = scores
                 if not np.all(np.isfinite(scores)):
                     raise GapHunterError(f"{config_id} seed {seed} produced non-finite scores")
                 frames.append(
@@ -388,6 +473,25 @@ def train(run: RunDir, cfg: MlConfig, split_seed: int) -> pd.DataFrame:
                     )
                 )
                 log.info("train.fitted", config=config_id, seed=seed, params=params)
+    if cfg.has_ensemble:
+        # Average of robustly standardised scores (first grid entry of each detector).
+        for seed in cfg.seeds:
+            parts = []
+            for detector in cfg.detectors:
+                scores = first_config[(detector, seed)]
+                loc, scale = robust_scale(scores[train_mask])
+                parts.append((scores - loc) / scale)
+            frames.append(
+                pd.DataFrame(
+                    {
+                        "window_id": windows["window_id"].to_numpy(),
+                        "detector": "ensemble",
+                        "config_id": "ensemble#0",
+                        "seed": seed,
+                        "score": np.mean(parts, axis=0),
+                    }
+                )
+            )
     result = pd.concat(frames, ignore_index=True)
     result.to_parquet(run.scores_path, index=False)
     log.info(

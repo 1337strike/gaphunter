@@ -66,6 +66,7 @@ EXECUTIONS_SCHEMA = pa.schema(
         pa.field("status", pa.string(), nullable=False),  # "open" | "ended" | "collected"
         pa.field("n_events", pa.int64()),
         pa.field("notes", pa.string()),
+        pa.field("import_group", pa.string()),
     ]
 )
 

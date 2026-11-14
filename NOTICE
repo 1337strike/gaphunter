@@ -1,0 +1,8 @@
+GapHunter
+Copyright 2026 GapHunter contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+GapHunter runs or reads the output of the following separately licensed tools, none of
+which are bundled: Hayabusa and its Sigma rules (Yamato Security), Sysmon (Microsoft
+Sysinternals), sysmon-modular (Olaf Hartong), Atomic Red Team (Red Canary).
